@@ -1,15 +1,15 @@
+"""Agent Battle arena — turn-based combat with deterministic RNG."""
+
 import copy
+import random as _random
 import secrets
+import threading
 import uuid
 
+from agent_battle import config
+from agent_battle.persistence import Persistence
 
-INITIAL_BALANCE = 1000
-INITIAL_HP = 100
-INITIAL_ENERGY = 50
-MAX_ENERGY = 100
-FIXED_STAKE = 100
-MAX_ROUNDS = 20
-VALID_ACTIONS = {"attack", "defend", "charge", "special", "forfeit"}
+VALID_ACTIONS = {"attack", "heavy", "defend", "heal", "forfeit"}
 
 
 class ArenaError(Exception):
@@ -21,213 +21,261 @@ class ArenaError(Exception):
 
 class Arena:
     def __init__(self):
-        self._agents = {}
+        self._lock = threading.RLock()
+        self._persistence = Persistence(config.DB_PATH)
+        self._agents = self._persistence.load_agents()
         self._api_keys = {}
-        self._battles = {}
+        self._names = {}
+        self._battles = self._persistence.load_battles()
+        for agent in self._agents.values():
+            self._api_keys[agent["api_key"]] = agent["agent_id"]
+            if agent.get("name"):
+                self._names[agent["name"]] = agent["agent_id"]
 
-    def create_agent(self):
-        agent_id = "agent_" + uuid.uuid4().hex
-        api_key = "ab_" + secrets.token_urlsafe(24)
-        agent = {
-            "agent_id": agent_id,
-            "api_key": api_key,
-            "balance": INITIAL_BALANCE,
-            "wins": 0,
-            "losses": 0,
-            "draws": 0,
-            "active_battle_id": None,
-        }
-        self._agents[agent_id] = agent
-        self._api_keys[api_key] = agent_id
-        return self._public_agent(agent)
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
+
+    def create_agent(self, name=None):
+        with self._lock:
+            name = (name or "").strip() or None
+            if name and name in self._names:
+                return self._public_agent(self._agents[self._names[name]])
+
+            agent_id = "agent_" + uuid.uuid4().hex
+            api_key = "ab_" + secrets.token_urlsafe(24)
+            agent = {
+                "agent_id": agent_id,
+                "api_key": api_key,
+                "name": name,
+                "balance": config.INITIAL_BALANCE,
+                "wins": 0,
+                "losses": 0,
+                "draws": 0,
+                "active_battle_id": None,
+            }
+            self._agents[agent_id] = agent
+            self._api_keys[api_key] = agent_id
+            if name:
+                self._names[name] = agent_id
+            self._persistence.save_agent(agent)
+            return self._public_agent(agent)
 
     def get_agent(self, api_key):
-        return self._public_agent(self._agent_for_key(api_key))
+        with self._lock:
+            return self._public_agent(self._agent_for_key(api_key))
 
     def create_battle(self, api_key, stake):
-        agent = self._agent_for_key(api_key)
-        self._ensure_available(agent)
-        self._validate_stake(agent, stake)
+        with self._lock:
+            agent = self._agent_for_key(api_key)
+            self._ensure_available(agent)
+            self._validate_stake(agent, stake)
 
-        battle_id = "battle_" + uuid.uuid4().hex
-        agent["balance"] -= stake
-        agent["active_battle_id"] = battle_id
-        battle = {
-            "battle_id": battle_id,
-            "status": "created",
-            "stake": stake,
-            "round": 1,
-            "participants": [agent["agent_id"]],
-            "states": {
-                agent["agent_id"]: self._new_player_state(),
-            },
-            "pending_actions": {},
-            "battle_log": [],
-            "winner_id": None,
-            "result": None,
-        }
-        self._battles[battle_id] = battle
-        return self._battle_summary(battle)
+            battle_id = "battle_" + uuid.uuid4().hex
+            agent["balance"] -= stake
+            agent["active_battle_id"] = battle_id
+            battle = {
+                "battle_id": battle_id,
+                "status": "created",
+                "stake": stake,
+                "seed": _random.randint(0, 2**31 - 1),
+                "turn": 0,
+                "participants": [agent["agent_id"]],
+                "order": [agent["agent_id"]],
+                "states": {
+                    agent["agent_id"]: self._new_player_state(),
+                },
+                "battle_log": [],
+                "winner_id": None,
+                "result": None,
+            }
+            self._battles[battle_id] = battle
+            self._persistence.save_agent(agent)
+            self._persistence.save_battle(battle)
+            return self._battle_summary(battle)
 
     def join_battle(self, api_key, battle_id):
-        agent = self._agent_for_key(api_key)
-        battle = self._battle_for_id(battle_id)
-        self._ensure_available(agent)
-        if battle["status"] != "created":
-            raise ArenaError(409, "battle is not joinable")
-        if agent["agent_id"] in battle["participants"]:
-            raise ArenaError(409, "agent cannot join its own battle")
-        self._validate_stake(agent, battle["stake"])
+        with self._lock:
+            agent = self._agent_for_key(api_key)
+            battle = self._battle_for_id(battle_id)
+            self._ensure_available(agent)
+            if battle["status"] != "created":
+                raise ArenaError(409, "battle is not joinable")
+            if agent["agent_id"] in battle["participants"]:
+                raise ArenaError(409, "agent cannot join its own battle")
+            self._validate_stake(agent, battle["stake"])
 
-        agent["balance"] -= battle["stake"]
-        agent["active_battle_id"] = battle_id
-        battle["participants"].append(agent["agent_id"])
-        battle["states"][agent["agent_id"]] = self._new_player_state()
-        battle["status"] = "active"
-        return self._battle_summary(battle)
+            agent["balance"] -= battle["stake"]
+            agent["active_battle_id"] = battle_id
+            battle["participants"].append(agent["agent_id"])
+            battle["order"].append(agent["agent_id"])
+            battle["states"][agent["agent_id"]] = self._new_player_state()
+            battle["status"] = "active"
+            self._persistence.save_agent(agent)
+            self._persistence.save_battle(battle)
+            return self._battle_summary(battle)
 
     def get_battle(self, api_key, battle_id):
-        agent = self._agent_for_key(api_key)
-        battle = self._battle_for_id(battle_id)
-        self._ensure_participant(agent, battle)
-        return self._battle_view(agent, battle)
+        with self._lock:
+            agent = self._agent_for_key(api_key)
+            battle = self._battle_for_id(battle_id)
+            self._ensure_participant(agent, battle)
+            return self._battle_view(agent, battle)
 
     def get_result(self, api_key, battle_id):
-        agent = self._agent_for_key(api_key)
-        battle = self._battle_for_id(battle_id)
-        self._ensure_participant(agent, battle)
-        if battle["status"] != "resolved":
-            raise ArenaError(409, "battle is not resolved")
-        return copy.deepcopy(battle["result"])
+        with self._lock:
+            agent = self._agent_for_key(api_key)
+            battle = self._battle_for_id(battle_id)
+            self._ensure_participant(agent, battle)
+            if battle["status"] != "resolved":
+                raise ArenaError(409, "battle is not resolved")
+            return copy.deepcopy(battle["result"])
 
     def list_public_battles(self):
-        return [self._public_battle_snapshot(battle) for battle in self._battles.values()]
+        with self._lock:
+            return [self._public_battle_snapshot(battle) for battle in self._battles.values()]
+
+    def list_open_battles(self):
+        with self._lock:
+            return [
+                self._battle_summary(battle)
+                for battle in self._battles.values()
+                if battle["status"] == "created"
+            ]
 
     def get_public_battle(self, battle_id):
-        return self._public_battle_snapshot(self._battle_for_id(battle_id))
+        with self._lock:
+            return self._public_battle_snapshot(self._battle_for_id(battle_id))
 
     def submit_action(self, api_key, battle_id, action):
-        agent = self._agent_for_key(api_key)
-        battle = self._battle_for_id(battle_id)
-        self._ensure_participant(agent, battle)
-        if battle["status"] != "active":
-            raise ArenaError(409, "battle is not active")
-        if action not in VALID_ACTIONS:
-            raise ArenaError(400, "invalid action")
-        agent_id = agent["agent_id"]
-        if agent_id in battle["pending_actions"]:
-            raise ArenaError(409, "agent already submitted an action this round")
+        with self._lock:
+            agent = self._agent_for_key(api_key)
+            battle = self._battle_for_id(battle_id)
+            self._ensure_participant(agent, battle)
+            if battle["status"] != "active":
+                raise ArenaError(409, "battle is not active")
+            if action not in VALID_ACTIONS:
+                raise ArenaError(400, "invalid action")
 
-        battle["pending_actions"][agent_id] = action
-        if action == "forfeit":
-            opponent_id = self._opponent_id(battle, agent_id)
-            return self._resolve_battle(battle, opponent_id, "forfeit")
-        if len(battle["pending_actions"]) == 2:
-            self._resolve_round(battle)
-        return self._battle_view(agent, battle)
+            agent_id = agent["agent_id"]
 
-    def _resolve_round(self, battle):
-        before = copy.deepcopy(battle["states"])
-        participants = battle["participants"]
-        resolved = {}
-        damage = {}
+            # forfeit is always allowed, even out of turn
+            if action == "forfeit":
+                opponent_id = self._opponent_id(battle, agent_id)
+                return self._resolve_battle(battle, opponent_id, "forfeit")
 
-        for agent_id in participants:
-            requested = battle["pending_actions"][agent_id]
-            action = self._resolve_action(battle["states"][agent_id], requested)
-            resolved[agent_id] = {"requested": requested, "resolved": action}
-            damage[agent_id] = self._base_damage(action)
+            # enforce turn order
+            current_actor = battle["order"][battle["turn"] % 2]
+            if agent_id != current_actor:
+                raise ArenaError(409, "not your turn")
 
-        for agent_id in participants:
+            # validate resource requirements
             state = battle["states"][agent_id]
-            action = resolved[agent_id]["resolved"]
-            if action == "attack":
-                state["energy"] -= 10
-            elif action == "defend":
-                state["energy"] = min(MAX_ENERGY, state["energy"] + 5)
-            elif action == "charge":
-                state["energy"] = min(MAX_ENERGY, state["energy"] + 20)
-            elif action == "special":
-                state["energy"] -= 30
+            err = self._validate_action(state, action)
+            if err:
+                raise ArenaError(409, err)
 
-        for agent_id in participants:
-            opponent_id = self._opponent_id(battle, agent_id)
-            incoming = damage[opponent_id]
-            if resolved[agent_id]["resolved"] == "defend":
-                incoming = incoming // 2
-            battle["states"][agent_id]["hp"] -= incoming
+            self._apply_action(battle, agent_id, action)
+            return self._battle_view(agent, battle)
 
-        for agent_id in participants:
-            cooldown = battle["states"][agent_id]["cooldowns"]["special"]
-            if cooldown > 0:
-                battle["states"][agent_id]["cooldowns"]["special"] = cooldown - 1
-        for agent_id in participants:
-            if resolved[agent_id]["resolved"] == "special":
-                battle["states"][agent_id]["cooldowns"]["special"] = 3
+    # ------------------------------------------------------------------
+    # action application
+    # ------------------------------------------------------------------
+
+    def _validate_action(self, state, action):
+        if action == "heavy" and state["mp"] < 15:
+            return "not enough MP for heavy (need 15)"
+        if action == "heal" and state["mp"] < 10:
+            return "not enough MP to heal (need 10)"
+        return None
+
+    def _apply_action(self, battle, actor, action):
+        opponent = self._opponent_id(battle, actor)
+        me = battle["states"][actor]
+        them = battle["states"][opponent]
+
+        # deterministic RNG for this turn
+        rng = _random.Random(battle["seed"] + battle["turn"])
+
+        # clear my defending at the start of my turn
+        me["defending"] = False
+
+        note = ""
+        if action == "attack":
+            base = 10 + int(rng.random() * 8)  # 10..17
+            dmg = base // 2 if them["defending"] else base
+            them["hp"] -= dmg
+            them["defending"] = False
+            note = f"{actor} attacks for {dmg}"
+
+        elif action == "heavy":
+            me["mp"] -= 15
+            if rng.random() > 0.25:  # 75% hit
+                base = 22 + int(rng.random() * 10)  # 22..31
+                dmg = base // 2 if them["defending"] else base
+                them["hp"] -= dmg
+                them["defending"] = False
+                note = f"{actor} heavy attack for {dmg}"
+            else:
+                note = f"{actor} heavy attack MISSED"
+
+        elif action == "defend":
+            me["defending"] = True
+            me["mp"] = min(config.MAX_MP, me["mp"] + 5)
+            note = f"{actor} defends (+5 MP)"
+
+        elif action == "heal":
+            me["mp"] -= 10
+            amount = 15 + int(rng.random() * 10)  # 15..24
+            healed = min(config.MAX_HP - me["hp"], amount)
+            me["hp"] += healed
+            note = f"{actor} heals {healed} HP"
 
         battle["battle_log"].append(
             {
-                "round": battle["round"],
-                "before": before,
-                "actions": resolved,
+                "turn": battle["turn"],
+                "actor": actor,
+                "action": action,
+                "note": note,
                 "after": copy.deepcopy(battle["states"]),
             }
         )
-        battle["pending_actions"] = {}
+        battle["turn"] += 1
 
-        winner_id = self._winner_after_round(battle)
-        if winner_id is not None or self._is_draw_after_round(battle):
-            return self._resolve_battle(battle, winner_id, "hp_depleted")
+        # check terminal after each turn
+        if self._is_terminal(battle):
+            winner_id = self._determine_winner(battle)
+            reason = "hp_depleted"
+            if winner_id is None and battle["turn"] >= config.MAX_TURNS:
+                reason = "turn_limit"
+            elif winner_id is None:
+                reason = "hp_depleted"
+            return self._resolve_battle(battle, winner_id, reason)
 
-        if battle["round"] >= MAX_ROUNDS:
-            return self._resolve_by_round_limit(battle)
+        if battle["turn"] >= config.MAX_TURNS:
+            winner_id = self._determine_winner(battle)
+            return self._resolve_battle(battle, winner_id, "turn_limit")
 
-        battle["round"] += 1
         return None
 
-    def _resolve_action(self, state, requested):
-        if requested == "special":
-            if state["cooldowns"]["special"] > 0:
-                requested = "attack"
-            elif state["energy"] < 30:
-                return "defend"
-        if requested == "attack" and state["energy"] < 10:
-            return "defend"
-        return requested
+    def _is_terminal(self, battle):
+        return any(s["hp"] <= 0 for s in battle["states"].values())
 
-    def _base_damage(self, action):
-        if action == "attack":
-            return 15
-        if action == "special":
-            return 35
-        return 0
-
-    def _winner_after_round(self, battle):
+    def _determine_winner(self, battle):
         a_id, b_id = battle["participants"]
         a_hp = battle["states"][a_id]["hp"]
         b_hp = battle["states"][b_id]["hp"]
         if a_hp <= 0 and b_hp <= 0:
-            if a_hp == b_hp:
-                return None
-            return a_id if a_hp > b_hp else b_id
+            return None  # draw
         if a_hp <= 0:
             return b_id
         if b_hp <= 0:
             return a_id
-        return None
-
-    def _is_draw_after_round(self, battle):
-        return all(state["hp"] <= 0 for state in battle["states"].values()) and self._winner_after_round(battle) is None
-
-    def _resolve_by_round_limit(self, battle):
-        a_id, b_id = battle["participants"]
-        a_hp = battle["states"][a_id]["hp"]
-        b_hp = battle["states"][b_id]["hp"]
-        if a_hp == b_hp:
-            winner_id = None
-        else:
-            winner_id = a_id if a_hp > b_hp else b_id
-        return self._resolve_battle(battle, winner_id, "round_limit")
+        if a_hp > b_hp:
+            return a_id
+        if b_hp > a_hp:
+            return b_id
+        return None  # draw
 
     def _resolve_battle(self, battle, winner_id, reason):
         if battle["status"] == "resolved":
@@ -240,14 +288,17 @@ class Arena:
             for agent_id in battle["participants"]:
                 self._agents[agent_id]["balance"] += battle["stake"]
                 self._agents[agent_id]["draws"] += 1
+                self._agents[agent_id]["active_battle_id"] = None
+                self._persistence.save_agent(self._agents[agent_id])
         else:
             self._agents[winner_id]["balance"] += pot
             self._agents[winner_id]["wins"] += 1
+            self._agents[winner_id]["active_battle_id"] = None
+            self._persistence.save_agent(self._agents[winner_id])
             loser_id = self._opponent_id(battle, winner_id)
             self._agents[loser_id]["losses"] += 1
-
-        for agent_id in battle["participants"]:
-            self._agents[agent_id]["active_battle_id"] = None
+            self._agents[loser_id]["active_battle_id"] = None
+            self._persistence.save_agent(self._agents[loser_id])
 
         battle["result"] = {
             "battle_id": battle["battle_id"],
@@ -256,7 +307,7 @@ class Arena:
             "winner_id": winner_id,
             "stake": battle["stake"],
             "pot": pot,
-            "rounds_played": len(battle["battle_log"]),
+            "turns_played": battle["turn"],
             "balances": {
                 agent_id: self._agents[agent_id]["balance"]
                 for agent_id in battle["participants"]
@@ -264,18 +315,23 @@ class Arena:
             "final_states": copy.deepcopy(battle["states"]),
             "battle_log": copy.deepcopy(battle["battle_log"]),
         }
+        self._persistence.save_battle(battle)
         return self._battle_summary(battle)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
 
     def _new_player_state(self):
         return {
-            "hp": INITIAL_HP,
-            "energy": INITIAL_ENERGY,
-            "cooldowns": {"special": 0},
+            "hp": config.INITIAL_HP,
+            "mp": config.INITIAL_MP,
+            "defending": False,
         }
 
     def _validate_stake(self, agent, stake):
-        if stake != FIXED_STAKE:
-            raise ArenaError(400, "stake must be 100")
+        if stake != config.FIXED_STAKE:
+            raise ArenaError(400, f"stake must be {config.FIXED_STAKE}")
         if agent["balance"] < stake:
             raise ArenaError(409, "insufficient balance")
 
@@ -303,14 +359,21 @@ class Arena:
                 return participant_id
         return None
 
+    # ------------------------------------------------------------------
+    # serialisation helpers
+    # ------------------------------------------------------------------
+
     def _battle_view(self, agent, battle):
         agent_id = agent["agent_id"]
         opponent_id = self._opponent_id(battle, agent_id)
         view = self._battle_summary(battle)
         view["self"] = copy.deepcopy(battle["states"][agent_id])
-        view["opponent"] = copy.deepcopy(battle["states"][opponent_id]) if opponent_id else None
+        view["opponent"] = (
+            copy.deepcopy(battle["states"][opponent_id]) if opponent_id else None
+        )
         view["needs_action"] = (
-            battle["status"] == "active" and agent_id not in battle["pending_actions"]
+            battle["status"] == "active"
+            and agent_id == battle["order"][battle["turn"] % 2]
         )
         view["battle_log"] = copy.deepcopy(battle["battle_log"])
         return view
@@ -320,7 +383,7 @@ class Arena:
             "battle_id": battle["battle_id"],
             "status": battle["status"],
             "stake": battle["stake"],
-            "round": battle["round"],
+            "turn": battle["turn"],
             "participants": list(battle["participants"]),
             "winner_id": battle["winner_id"],
         }
@@ -331,11 +394,10 @@ class Arena:
             "status": battle["status"],
             "stake": battle["stake"],
             "pot": battle["stake"] * len(battle["participants"]),
-            "round": battle["round"],
+            "turn": battle["turn"],
             "participants": list(battle["participants"]),
             "winner_id": battle["winner_id"],
             "states": copy.deepcopy(battle["states"]),
-            "pending_action_count": len(battle["pending_actions"]),
             "battle_log": copy.deepcopy(battle["battle_log"]),
             "result": copy.deepcopy(battle["result"]),
         }

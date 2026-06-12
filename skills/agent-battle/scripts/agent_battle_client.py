@@ -1,140 +1,60 @@
 #!/usr/bin/env python3
+"""Single-agent matchmaking client for Agent Battle.
+
+Registers one agent (or reuses an existing key), joins the first open
+battle, or creates a new one and waits for an opponent.  Never creates
+two agents — it always looks for a real opponent first.
+"""
+
 import argparse
 import json
 import os
-import urllib.error
-import urllib.request
+import sys
+
+# Make the repo-root agent_battle package importable regardless of CWD.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
+from agent_battle.client import STRATEGIES, HttpTransport, play_single_agent
 
 DEFAULT_ARENA_URL = "http://101.43.87.232:8080"
 
 
-def request(base_url, method, path, api_key=None, payload=None):
-    headers = {"content-type": "application/json"}
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-    if api_key:
-        headers["authorization"] = f"Bearer {api_key}"
-
-    req = urllib.request.Request(
-        base_url.rstrip("/") + path,
-        data=data,
-        headers=headers,
-        method=method,
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8")
-        raise RuntimeError(f"HTTP {error.code}: {body}") from error
-
-
-def aggressive(state):
-    own = state["self"]
-    if own["energy"] >= 30 and own["cooldowns"]["special"] == 0:
-        return "special"
-    if own["energy"] >= 10:
-        return "attack"
-    return "charge"
-
-
-def defensive(state):
-    own = state["self"]
-    opponent = state["opponent"]
-    if own["hp"] <= 30 or opponent["energy"] >= 70:
-        return "defend"
-    if own["energy"] >= 30 and own["cooldowns"]["special"] == 0:
-        return "special"
-    if own["energy"] >= 10:
-        return "attack"
-    return "charge"
-
-
-def balanced(state):
-    own = state["self"]
-    opponent = state["opponent"]
-    if own["hp"] <= 35 and opponent["energy"] >= 30:
-        return "defend"
-    if opponent["hp"] <= 35 and own["energy"] >= 30 and own["cooldowns"]["special"] == 0:
-        return "special"
-    if own["energy"] < 10:
-        return "charge"
-    if own["energy"] >= 30 and own["cooldowns"]["special"] == 0 and opponent["energy"] < 70:
-        return "special"
-    if opponent["energy"] >= 80:
-        return "defend"
-    return "attack"
-
-
-STRATEGIES = {
-    "aggressive": aggressive,
-    "defensive": defensive,
-    "balanced": balanced,
-}
-
-
-def play(base_url, agent_a_strategy, agent_b_strategy):
-    choose_a = STRATEGIES[agent_a_strategy]
-    choose_b = STRATEGIES[agent_b_strategy]
-
-    agent_a = request(base_url, "POST", "/agents", payload={})
-    agent_b = request(base_url, "POST", "/agents", payload={})
-    battle = request(base_url, "POST", "/battles", agent_a["api_key"], {"stake": 100})
-    battle_id = battle["battle_id"]
-    request(base_url, "POST", f"/battles/{battle_id}/join", agent_b["api_key"], {})
-
-    status = "active"
-    while status != "resolved":
-        state_a = request(base_url, "GET", f"/battles/{battle_id}", agent_a["api_key"])
-        if state_a["status"] == "resolved":
-            break
-        if state_a["needs_action"]:
-            response = request(
-                base_url,
-                "POST",
-                f"/battles/{battle_id}/actions",
-                agent_a["api_key"],
-                {"action": choose_a(state_a)},
-            )
-            status = response["status"]
-            if status == "resolved":
-                break
-
-        state_b = request(base_url, "GET", f"/battles/{battle_id}", agent_b["api_key"])
-        if state_b["status"] == "resolved":
-            break
-        if state_b["needs_action"]:
-            response = request(
-                base_url,
-                "POST",
-                f"/battles/{battle_id}/actions",
-                agent_b["api_key"],
-                {"action": choose_b(state_b)},
-            )
-            status = response["status"]
-
-    result = request(base_url, "GET", f"/battles/{battle_id}/result", agent_a["api_key"])
-    return {
-        "agent_a_id": agent_a["agent_id"],
-        "agent_a_strategy": agent_a_strategy,
-        "agent_b_id": agent_b["agent_id"],
-        "agent_b_strategy": agent_b_strategy,
-        "winner_id": result["winner_id"],
-        "rounds_played": result["rounds_played"],
-        "balances": result["balances"],
-        "result": result,
-    }
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Connect to an Agent Battle arena.")
-    parser.add_argument("--base-url", default=os.environ.get("AGENT_BATTLE_URL", DEFAULT_ARENA_URL))
-    parser.add_argument("--agent-a", default="balanced", choices=sorted(STRATEGIES))
-    parser.add_argument("--agent-b", default="aggressive", choices=sorted(STRATEGIES))
+    parser = argparse.ArgumentParser(
+        description="Single-agent matchmaking client for Agent Battle."
+    )
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("AGENT_BATTLE_URL", DEFAULT_ARENA_URL),
+    )
+    parser.add_argument(
+        "--strategy",
+        default="balanced",
+        choices=sorted(STRATEGIES),
+    )
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("AGENT_BATTLE_API_KEY", ""),
+        help="Reuse an existing agent key. If not set, a new agent is registered.",
+    )
     args = parser.parse_args()
 
-    print(json.dumps(play(args.base_url, args.agent_a, args.agent_b), indent=2, sort_keys=True))
+    transport = HttpTransport(args.base_url)
+
+    if args.api_key:
+        api_key = args.api_key
+        agent = transport.request("GET", "/agents/me", api_key=api_key)
+        print(f"Reusing agent {agent['agent_id']}  balance={agent['balance']}", file=sys.stderr)
+    else:
+        agent = transport.request("POST", "/agents", payload={})
+        api_key = agent["api_key"]
+        print(f"Registered new agent {agent['agent_id']}", file=sys.stderr)
+        print(f"Export this key for reuse: export AGENT_BATTLE_API_KEY={api_key}", file=sys.stderr)
+
+    result = play_single_agent(transport, api_key, strategy_name=args.strategy)
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

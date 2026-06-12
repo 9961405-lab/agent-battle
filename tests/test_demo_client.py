@@ -1,8 +1,9 @@
 import unittest
 
 from agent_battle.arena import Arena
+from agent_battle.client import AppTransport
 from agent_battle.server import create_app
-from examples.demo_battle import AppTransport, play_demo_battle
+from examples.demo_battle import play_demo_battle
 
 
 class DemoClientTest(unittest.TestCase):
