@@ -79,6 +79,7 @@ class App:
                         "GET /agents/me",
                         "POST /battles",
                         "GET /battles/open",
+                        "GET /battles/room/{room_code}",
                         "POST /battles/{battle_id}/join",
                         "GET /battles/{battle_id}",
                         "POST /battles/{battle_id}/actions",
@@ -99,11 +100,16 @@ class App:
         if method == "GET" and parts == ["agents", "me"]:
             return self._json(200, self.arena.get_agent(api_key))
         if method == "POST" and parts == ["battles"]:
-            result = self.arena.create_battle(api_key, body.get("stake"))
-            logger.info("battle created id=%s", result["battle_id"])
+            result = self.arena.create_battle(api_key, body.get("stake"), room=body.get("room"))
+            logger.info("battle created id=%s room=%s", result["battle_id"], result.get("room"))
             return self._json(201, result)
         if method == "GET" and parts == ["battles", "open"]:
             return self._json(200, {"open_battles": self.arena.list_open_battles()})
+        if method == "GET" and len(parts) == 3 and parts[:2] == ["battles", "room"]:
+            battle = self.arena.find_battle_by_room(parts[2])
+            if not battle:
+                return self._json(404, {"error": "room not found"})
+            return self._json(200, battle)
         if method == "POST" and len(parts) == 3 and parts[0] == "battles" and parts[2] == "join":
             result = self.arena.join_battle(api_key, parts[1])
             logger.info("battle joined id=%s", parts[1])

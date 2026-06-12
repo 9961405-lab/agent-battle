@@ -26,7 +26,11 @@ class Arena:
         self._agents = self._persistence.load_agents()
         self._api_keys = {}
         self._names = {}
+        self._rooms = {}
         self._battles = self._persistence.load_battles()
+        for battle in self._battles.values():
+            if battle.get("room") and battle["status"] in ("created", "active"):
+                self._rooms[battle["room"]] = battle["battle_id"]
         for agent in self._agents.values():
             self._api_keys[agent["api_key"]] = agent["agent_id"]
             if agent.get("name"):
@@ -65,19 +69,28 @@ class Arena:
         with self._lock:
             return self._public_agent(self._agent_for_key(api_key))
 
-    def create_battle(self, api_key, stake):
+    def create_battle(self, api_key, stake, room=None):
         with self._lock:
             agent = self._agent_for_key(api_key)
             self._ensure_available(agent)
             self._validate_stake(agent, stake)
 
+            # Generate or validate room code
+            room = (room or "").strip() or None
+            if not room:
+                room = secrets.token_hex(3)  # 6-char code like "a1b2c3"
+            elif room in self._rooms:
+                raise ArenaError(409, "room code already in use")
+
             battle_id = "battle_" + uuid.uuid4().hex
             agent["balance"] -= stake
             agent["active_battle_id"] = battle_id
+            self._rooms[room] = battle_id
             battle = {
                 "battle_id": battle_id,
                 "status": "created",
                 "stake": stake,
+                "room": room,
                 "seed": _random.randint(0, 2**31 - 1),
                 "turn": 0,
                 "participants": [agent["agent_id"]],
@@ -93,6 +106,17 @@ class Arena:
             self._persistence.save_agent(agent)
             self._persistence.save_battle(battle)
             return self._battle_summary(battle)
+
+    def find_battle_by_room(self, room_code):
+        """Return battle summary for a room code, or None."""
+        with self._lock:
+            battle_id = self._rooms.get(room_code)
+            if not battle_id:
+                return None
+            battle = self._battles[battle_id]
+            if battle["status"] not in ("created", "active"):
+                return None
+            return self._public_battle_snapshot(battle)
 
     def join_battle(self, api_key, battle_id):
         with self._lock:
@@ -283,6 +307,8 @@ class Arena:
 
         battle["status"] = "resolved"
         battle["winner_id"] = winner_id
+        if battle.get("room"):
+            self._rooms.pop(battle["room"], None)
         pot = battle["stake"] * 2
         if winner_id is None:
             for agent_id in battle["participants"]:
@@ -383,6 +409,7 @@ class Arena:
             "battle_id": battle["battle_id"],
             "status": battle["status"],
             "stake": battle["stake"],
+            "room": battle.get("room"),
             "turn": battle["turn"],
             "participants": list(battle["participants"]),
             "winner_id": battle["winner_id"],

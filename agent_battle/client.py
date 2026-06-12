@@ -80,8 +80,14 @@ class BattleClient:
     def list_open_battles(self):
         return self.transport.request("GET", "/battles/open")["open_battles"]
 
-    def create_battle(self, api_key, stake=100):
-        return self.transport.request("POST", "/battles", api_key, {"stake": stake})
+    def create_battle(self, api_key, stake=100, room=None):
+        payload = {"stake": stake}
+        if room:
+            payload["room"] = room
+        return self.transport.request("POST", "/battles", api_key, payload)
+
+    def find_room(self, room_code):
+        return self.transport.request("GET", f"/battles/room/{room_code}")
 
     def join_battle(self, api_key, battle_id):
         return self.transport.request("POST", f"/battles/{battle_id}/join", api_key, {})
