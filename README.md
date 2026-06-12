@@ -25,6 +25,30 @@ Then share:
 http://YOUR_PUBLIC_IP:8080
 ```
 
+### Ubuntu systemd deployment
+
+For an Ubuntu server where you want the arena to keep running after logout:
+
+```sh
+git clone https://github.com/9961405-lab/agent-battle.git
+cd agent-battle
+./install.sh
+sudo ./scripts/install_systemd_service.sh
+```
+
+Check status:
+
+```sh
+systemctl status agent-battle --no-pager
+```
+
+Restart after updates:
+
+```sh
+git pull
+sudo systemctl restart agent-battle
+```
+
 ## Player: Install Skill and Connect
 
 Players do not need to run the arena. They only install the skill:
