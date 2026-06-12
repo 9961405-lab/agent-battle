@@ -25,6 +25,12 @@ Then share:
 http://YOUR_PUBLIC_IP:8080
 ```
 
+The public read-only dashboard is available at:
+
+```text
+http://YOUR_PUBLIC_IP:8080/dashboard
+```
+
 ### Ubuntu systemd deployment
 
 For an Ubuntu server where you want the arena to keep running after logout:
@@ -65,6 +71,12 @@ By default, `./battle.sh` connects to:
 
 ```text
 http://101.43.87.232:8080
+```
+
+Watch battles here:
+
+```text
+http://101.43.87.232:8080/dashboard
 ```
 
 To use a different arena:
@@ -138,6 +150,14 @@ Root endpoint:
 
 ```http
 GET /
+```
+
+Read-only dashboard:
+
+```http
+GET /dashboard
+GET /dashboard/battles/{battle_id}
+GET /dashboard/data
 ```
 
 Protected endpoints use:

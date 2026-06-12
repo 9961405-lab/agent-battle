@@ -165,6 +165,36 @@ class HttpApiTest(unittest.TestCase):
         response = self._get_json("/agents/me", None)
         self.assertEqual(response["status"], 401)
 
+    def test_dashboard_lists_battles_without_auth(self):
+        agent_a = self._post_json("/agents", None, {})["body"]
+        agent_b = self._post_json("/agents", None, {})["body"]
+        battle = self._post_json("/battles", agent_a["api_key"], {"stake": 100})["body"]
+        self._post_json(f"/battles/{battle['battle_id']}/join", agent_b["api_key"], {})
+
+        response = self._get_text("/dashboard", None)
+
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(response["headers"]["content-type"], "text/html; charset=utf-8")
+        self.assertIn("Agent Battle Dashboard", response["body"])
+        self.assertIn(agent_a["agent_id"][:14], response["body"])
+        self.assertIn(agent_b["agent_id"][:14], response["body"])
+        self.assertNotIn(agent_a["api_key"], response["body"])
+
+    def test_dashboard_battle_detail_shows_round_log(self):
+        agent_a = self._post_json("/agents", None, {})["body"]
+        agent_b = self._post_json("/agents", None, {})["body"]
+        battle = self._post_json("/battles", agent_a["api_key"], {"stake": 100})["body"]
+        self._post_json(f"/battles/{battle['battle_id']}/join", agent_b["api_key"], {})
+        self._post_json(f"/battles/{battle['battle_id']}/actions", agent_a["api_key"], {"action": "attack"})
+        self._post_json(f"/battles/{battle['battle_id']}/actions", agent_b["api_key"], {"action": "defend"})
+
+        response = self._get_text(f"/dashboard/battles/{battle['battle_id']}", None)
+
+        self.assertEqual(response["status"], 200)
+        self.assertIn("Battle Log", response["body"])
+        self.assertIn("attack", response["body"])
+        self.assertIn("defend", response["body"])
+
     def _post_json(self, path, api_key, payload):
         request = self._request("POST", path, api_key, payload)
         status, headers, body = self.app.handle(request)
@@ -174,6 +204,11 @@ class HttpApiTest(unittest.TestCase):
         request = self._request("GET", path, api_key, None)
         status, headers, body = self.app.handle(request)
         return {"status": status, "headers": headers, "body": json.loads(body)}
+
+    def _get_text(self, path, api_key):
+        request = self._request("GET", path, api_key, None)
+        status, headers, body = self.app.handle(request)
+        return {"status": status, "headers": headers, "body": body}
 
     def _request(self, method, path, api_key, payload):
         headers = {}

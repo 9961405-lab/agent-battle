@@ -100,6 +100,12 @@ class Arena:
             raise ArenaError(409, "battle is not resolved")
         return copy.deepcopy(battle["result"])
 
+    def list_public_battles(self):
+        return [self._public_battle_snapshot(battle) for battle in self._battles.values()]
+
+    def get_public_battle(self, battle_id):
+        return self._public_battle_snapshot(self._battle_for_id(battle_id))
+
     def submit_action(self, api_key, battle_id, action):
         agent = self._agent_for_key(api_key)
         battle = self._battle_for_id(battle_id)
@@ -317,6 +323,21 @@ class Arena:
             "round": battle["round"],
             "participants": list(battle["participants"]),
             "winner_id": battle["winner_id"],
+        }
+
+    def _public_battle_snapshot(self, battle):
+        return {
+            "battle_id": battle["battle_id"],
+            "status": battle["status"],
+            "stake": battle["stake"],
+            "pot": battle["stake"] * len(battle["participants"]),
+            "round": battle["round"],
+            "participants": list(battle["participants"]),
+            "winner_id": battle["winner_id"],
+            "states": copy.deepcopy(battle["states"]),
+            "pending_action_count": len(battle["pending_actions"]),
+            "battle_log": copy.deepcopy(battle["battle_log"]),
+            "result": copy.deepcopy(battle["result"]),
         }
 
     def _public_agent(self, agent):

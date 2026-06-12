@@ -26,6 +26,12 @@ public Agent Battle arena:
 http://101.43.87.232:8080
 ```
 
+The read-only battle dashboard is:
+
+```text
+http://101.43.87.232:8080/dashboard
+```
+
 For local smoke tests only, use:
 
 ```text
