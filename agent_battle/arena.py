@@ -5,6 +5,7 @@ import hashlib
 import random as _random
 import secrets
 import threading
+import time
 import uuid
 
 from agent_battle import config
@@ -45,6 +46,8 @@ def _validate_skills(skills):
 
 
 class Arena:
+    RESOLVED_TTL = 3600  # seconds before resolved battles are purged from memory
+
     def __init__(self):
         self._lock = threading.RLock()
         self._persistence = Persistence(config.DB_PATH)
@@ -54,13 +57,29 @@ class Arena:
         self._rooms = {}
         self._battles = self._persistence.load_battles()
         self._server_secret = secrets.token_hex(32)  # anti seed-prediction
+        self._last_cleanup = time.monotonic()
         for battle in self._battles.values():
+            battle.setdefault("resolved_at", None)
             if battle.get("room") and battle["status"] in ("created", "active"):
                 self._rooms[battle["room"]] = battle["battle_id"]
         for agent in self._agents.values():
             self._api_keys[agent["api_key"]] = agent["agent_id"]
             if agent.get("name"):
                 self._names[agent["name"]] = agent["agent_id"]
+
+    def _maybe_cleanup(self):
+        now = time.monotonic()
+        if now - self._last_cleanup < 300:
+            return
+        self._last_cleanup = now
+        stale = [
+            bid for bid, b in self._battles.items()
+            if b["status"] == "resolved"
+            and b.get("resolved_at")
+            and now - b["resolved_at"] > self.RESOLVED_TTL
+        ]
+        for bid in stale:
+            del self._battles[bid]
 
     # ==================================================================
     # public API
@@ -194,6 +213,7 @@ class Arena:
     def list_open_battles(self, api_key=None):
         """Return joinable battles, filtering out same-owner battles."""
         with self._lock:
+            self._maybe_cleanup()
             agent = None
             if api_key:
                 try:
@@ -278,12 +298,14 @@ class Arena:
             w_skills, l_skills = a_skills, b_skills
             w_ss, l_ss = a_ss, b_ss
             w_state, l_state = a_state, b_state
+            w_mp_cost, l_mp_cost = a_mp_cost, b_mp_cost
         elif bid_b > bid_a:
             winner, loser = b_id, a_id
             w_bid, l_bid = bid_b, bid_a
             w_skills, l_skills = b_skills, a_skills
             w_ss, l_ss = b_ss, a_ss
             w_state, l_state = b_state, a_state
+            w_mp_cost, l_mp_cost = b_mp_cost, a_mp_cost
         else:
             # tie
             a_state["mp"] = min(config.MAX_MP, a_state["mp"] + 10)
@@ -292,9 +314,19 @@ class Arena:
                 a_state["mp"] = min(config.MAX_MP, a_state["mp"] + 5)
             if "meditate" in b_skills:
                 b_state["mp"] = min(config.MAX_MP, b_state["mp"] + 5)
+            # Tick poison on tie rounds
+            for pid, ss, st in [(a_id, a_ss, a_state), (b_id, b_ss, b_state)]:
+                if ss["poison_rounds"] > 0:
+                    st["hp"] -= 4
+                    ss["poison_rounds"] -= 1
+
             note_a = f"tie ({bid_a} vs {bid_b}), +10 MP"
             note_b = f"tie ({bid_b} vs {bid_a}), +10 MP"
             self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a, note_b, None, 0)
+
+            if self._is_terminal(battle):
+                wid = self._determine_winner(battle)
+                return self._resolve_battle(battle, wid, "hp_depleted")
             return
 
         damage = w_bid - l_bid
@@ -322,22 +354,12 @@ class Arena:
             heal = max(1, int(damage * 0.3))
             w_state["hp"] = min(config.MAX_HP, w_state["hp"] + heal)
 
-        # Overcharge self-damage if loser overbid
-        if "overcharge" in l_skills and l_bid > (battle["states"][loser]["mp"] + 5 - l_bid + l_mp_cost):
-            pass  # handled during validation
-
-        # Actually: overcharge self-damage on loss
+        # Overcharge: if you used MP beyond your natural pool (bid > pre-deduction MP),
+        # you lose 5 HP. Only the loser takes overcharge self-damage.
         if "overcharge" in l_skills:
-            over_amount = l_bid - (battle["states"][loser]["mp"] + l_mp_cost + 5)
-            if over_amount > 0:
-                l_state["hp"] -= 5  # self damage for overextending
-
-        # Overcharge self-damage for winner too (if they overbid)
-        if "overcharge" in w_skills:
-            base_mp = battle["states"][winner]["mp"] + w_mp_cost
-            over_amount = w_bid - (base_mp + 5)
-            if over_amount > 0:
-                w_state["hp"] -= 5
+            pre_mp = l_state["mp"] + l_mp_cost  # MP before this bid was deducted
+            if l_bid > pre_mp:
+                l_state["hp"] -= 5
 
         # Tick poison on loser
         if l_ss["poison_rounds"] > 0:
@@ -397,6 +419,7 @@ class Arena:
             return self._battle_summary(battle)
 
         battle["status"] = "resolved"
+        battle["resolved_at"] = time.monotonic()
         battle["winner_id"] = winner_id
         if battle.get("room"):
             self._rooms.pop(battle["room"], None)
@@ -498,8 +521,20 @@ class Arena:
             battle["status"] == "active"
             and agent_id not in battle["pending_bids"]
         )
-        view["battle_log"] = copy.deepcopy(battle["battle_log"])
+        view["battle_log"] = self._fog_battle_log(battle["battle_log"], agent_id, opponent_id)
         return view
+
+    def _fog_battle_log(self, log, agent_id, opponent_id):
+        """Return battle log with opponent's exact stats replaced by fog values."""
+        fogged = []
+        for entry in log:
+            e = copy.deepcopy(entry)
+            if opponent_id and opponent_id in e.get("after", {}):
+                opp = e["after"][opponent_id]
+                opp["hp"] = _fog(opp["hp"], config.MAX_HP)
+                opp["mp"] = _fog(opp["mp"], config.MAX_MP)
+            fogged.append(e)
+        return fogged
 
     def _battle_summary(self, battle):
         return {
