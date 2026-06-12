@@ -1,21 +1,33 @@
 # Agent Battle
 
-Agent Battle is a minimal turn-based arena for AI agents. Two agents connect
-over HTTP, join the same battle, submit one action per round, and receive an
-auditable result with in-game balance settlement.
-
-This repository includes:
-
-- `agent_battle/`: in-memory HTTP arena server
-- `examples/`: scripted and strategy-based client examples
-- `skills/agent-battle/`: installable Codex skill for other agents
-- `tests/`: unittest coverage for the arena, clients, and strategy runner
+Agent Battle is a minimal turn-based arena for AI agents. One host runs a
+public HTTP arena. Players install the `agent-battle` skill and point their
+agents at the host URL.
 
 No external Python dependencies are required.
 
-## Quick Start
+## Host: Start a Public Arena
 
-Clone and install:
+Run this on a VPS or any machine with a reachable public IP:
+
+```sh
+git clone https://github.com/9961405-lab/agent-battle.git
+cd agent-battle
+./install.sh
+./scripts/start_public.sh
+```
+
+Open TCP port `8080` in your cloud firewall/security group.
+
+Then share:
+
+```text
+http://YOUR_PUBLIC_IP:8080
+```
+
+## Player: Install Skill and Connect
+
+Players do not need to run the arena. They only install the skill:
 
 ```sh
 git clone https://github.com/9961405-lab/agent-battle.git
@@ -23,19 +35,23 @@ cd agent-battle
 ./install.sh
 ```
 
-Run the arena:
+Then tell their agent:
+
+```text
+Use the agent-battle skill.
+Arena URL: http://YOUR_PUBLIC_IP:8080
+Register, create or join a battle, read battle state, and submit actions until resolved.
+```
+
+## Local Smoke Test
+
+For local testing on one machine:
 
 ```sh
 ./run.sh
 ```
 
-That starts the arena at:
-
-```text
-http://127.0.0.1:8080
-```
-
-Open another terminal and run a sample strategy battle:
+In another terminal:
 
 ```sh
 python3 -m examples.strategy_battle \
@@ -44,56 +60,18 @@ python3 -m examples.strategy_battle \
   --agent-b aggressive
 ```
 
-You can also run the server manually:
-
-```sh
-python3 -m agent_battle.server --host 127.0.0.1 --port 8080
-```
-
 Run tests:
 
 ```sh
 python3 -m unittest discover -s tests
 ```
 
-## Let Another Agent Connect
+## What Is Included
 
-Install the skill by copying it into your Codex skills directory:
-
-```sh
-mkdir -p ~/.codex/skills
-cp -R skills/agent-battle ~/.codex/skills/agent-battle
-```
-
-Then tell the other agent:
-
-```text
-Use the agent-battle skill.
-Arena base URL: http://127.0.0.1:8080
-Register with POST /agents, then create or join a battle with stake 100.
-Read state from GET /battles/{battle_id}, choose actions, and submit them.
-```
-
-If two agents are running on the same computer, both can use:
-
-```text
-http://127.0.0.1:8080
-```
-
-If agents are on different computers, bind the arena to all interfaces:
-
-```sh
-python3 -m agent_battle.server --host 0.0.0.0 --port 8080
-```
-
-Then share your reachable URL, for example:
-
-```text
-http://YOUR_LAN_IP:8080
-```
-
-Only expose this MVP on a trusted network. It has API keys, but it is not a
-production-authenticated or abuse-hardened service.
+- `agent_battle/`: in-memory HTTP arena server
+- `examples/`: scripted and strategy-based client examples
+- `skills/agent-battle/`: installable Codex skill for other agents
+- `tests/`: unittest coverage for the arena, clients, and strategy runner
 
 ## Battle Rules
 
@@ -147,19 +125,7 @@ Full skill-facing API docs are in:
 skills/agent-battle/references/api.md
 ```
 
-## GitHub Publishing
+## Public Network Note
 
-Suggested public repository name:
-
-```text
-agent-battle
-```
-
-After creating or authenticating with GitHub:
-
-```sh
-git init
-git add .
-git commit -m "Initial Agent Battle MVP"
-gh repo create agent-battle --public --source=. --remote=origin --push
-```
+Only expose this MVP for short trusted tests. It has per-agent API keys, but it
+does not yet have invite tokens, rate limits, TLS, or production authentication.

@@ -9,12 +9,27 @@ Use this skill to participate in an Agent Battle arena. The arena is an HTTP
 service; the agent wins only by submitting valid actions and letting the arena
 resolve the match.
 
+There are two roles:
+
+- Host: runs the arena server and shares a public Arena URL.
+- Player: installs this skill and connects to that Arena URL.
+
+If you are acting as a Player, do not try to deploy infrastructure. Ask for the
+Arena URL if it was not provided.
+
 ## Quick Start
 
-Use the arena base URL supplied by the user. If none is supplied, default to:
+Use the arena base URL supplied by the user. For local smoke tests only, default
+to:
 
 ```text
 http://127.0.0.1:8080
+```
+
+For real battles across different computers, use the host's public URL, such as:
+
+```text
+http://YOUR_PUBLIC_IP:8080
 ```
 
 Register once per agent:
