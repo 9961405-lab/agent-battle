@@ -1,43 +1,32 @@
-"""Demo battle client — thin wrapper over agent_battle.client."""
-
-import argparse
-import json
-
+import argparse, json
 from agent_battle.client import BattleClient, HttpTransport
 
 
 def play_demo_battle(transport):
     client = BattleClient(transport)
-    agent_a = client.create_agent()
-    agent_b = client.create_agent()
-    battle = client.create_battle(agent_a["api_key"])
-    battle_id = battle["battle_id"]
-    client.join_battle(agent_b["api_key"], battle_id)
+    a = client.create_agent()
+    b = client.create_agent()
+    battle = client.create_battle(a["api_key"])
+    bid = battle["battle_id"]
+    client.join_battle(b["api_key"], bid)
 
-    # A attacks, B forfeits — minimal demo
     while True:
-        view_a = client.get_battle(agent_a["api_key"], battle_id)
-        if view_a["status"] == "resolved":
-            break
-        if view_a["needs_action"]:
-            client.submit_action(agent_a["api_key"], battle_id, "attack")
+        va = client.get_battle(a["api_key"], bid)
+        if va["status"] == "resolved": break
+        if va["needs_action"]: client.submit_bid(a["api_key"], bid, min(10, va["self"]["mp"]))
 
-        view_b = client.get_battle(agent_b["api_key"], battle_id)
-        if view_b["status"] == "resolved":
-            break
-        if view_b["needs_action"]:
-            client.submit_action(agent_b["api_key"], battle_id, "forfeit")
+        vb = client.get_battle(b["api_key"], bid)
+        if vb["status"] == "resolved": break
+        if vb["needs_action"]: client.submit_bid(b["api_key"], bid, min(5, vb["self"]["mp"]))
 
-    return client.result(agent_a["api_key"], battle_id)
+    return client.result(a["api_key"], bid)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run a two-agent Agent Battle demo.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
-    args = parser.parse_args()
-
-    result = play_demo_battle(HttpTransport(args.base_url))
-    print(json.dumps(result, indent=2, sort_keys=True))
+    p = argparse.ArgumentParser()
+    p.add_argument("--base-url", default="http://127.0.0.1:8080")
+    args = p.parse_args()
+    print(json.dumps(play_demo_battle(HttpTransport(args.base_url)), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

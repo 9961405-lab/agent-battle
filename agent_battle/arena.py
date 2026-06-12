@@ -1,4 +1,4 @@
-"""Agent Battle arena — turn-based combat with deterministic RNG."""
+"""Agent Battle arena — blind-bid combat with fog of war and skill decks."""
 
 import copy
 import random as _random
@@ -9,14 +9,32 @@ import uuid
 from agent_battle import config
 from agent_battle.persistence import Persistence
 
-VALID_ACTIONS = {"attack", "heavy", "defend", "heal", "forfeit"}
-
 
 class ArenaError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def _fog(value, max_val):
+    ratio = value / max_val if max_val else 0
+    if ratio <= 0.33:
+        return "low"
+    elif ratio <= 0.66:
+        return "mid"
+    return "high"
+
+
+def _validate_skills(skills):
+    if not skills:
+        return []
+    picked = []
+    for s in skills:
+        s = (s or "").strip().lower()
+        if s and s in config.SKILL_POOL and s not in picked:
+            picked.append(s)
+    return picked[:3]
 
 
 class Arena:
@@ -36,11 +54,11 @@ class Arena:
             if agent.get("name"):
                 self._names[agent["name"]] = agent["agent_id"]
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # public API
-    # ------------------------------------------------------------------
+    # ==================================================================
 
-    def create_agent(self, name=None):
+    def create_agent(self, name=None, skills=None):
         with self._lock:
             name = (name or "").strip() or None
             if name and name in self._names:
@@ -48,10 +66,12 @@ class Arena:
 
             agent_id = "agent_" + uuid.uuid4().hex
             api_key = "ab_" + secrets.token_urlsafe(24)
+            picked = _validate_skills(skills or [])
             agent = {
                 "agent_id": agent_id,
                 "api_key": api_key,
                 "name": name,
+                "skills": picked,
                 "balance": config.INITIAL_BALANCE,
                 "wins": 0,
                 "losses": 0,
@@ -75,10 +95,9 @@ class Arena:
             self._ensure_available(agent)
             self._validate_stake(agent, stake)
 
-            # Generate or validate room code
             room = (room or "").strip() or None
             if not room:
-                room = secrets.token_hex(3)  # 6-char code like "a1b2c3"
+                room = secrets.token_hex(3)
             elif room in self._rooms:
                 raise ArenaError(409, "room code already in use")
 
@@ -91,16 +110,17 @@ class Arena:
                 "status": "created",
                 "stake": stake,
                 "room": room,
-                "seed": _random.randint(0, 2**31 - 1),
+                "seed": _random.randint(0, 2 ** 31 - 1),
                 "turn": 0,
                 "participants": [agent["agent_id"]],
                 "order": [agent["agent_id"]],
-                "states": {
-                    agent["agent_id"]: self._new_player_state(),
-                },
+                "states": {agent["agent_id"]: self._new_player_state()},
+                "pending_bids": {},
                 "battle_log": [],
                 "winner_id": None,
                 "result": None,
+                # per-battle skill state
+                "skill_state": {},
             }
             self._battles[battle_id] = battle
             self._persistence.save_agent(agent)
@@ -108,7 +128,6 @@ class Arena:
             return self._battle_summary(battle)
 
     def find_battle_by_room(self, room_code):
-        """Return battle summary for a room code, or None."""
         with self._lock:
             battle_id = self._rooms.get(room_code)
             if not battle_id:
@@ -135,6 +154,9 @@ class Arena:
             battle["order"].append(agent["agent_id"])
             battle["states"][agent["agent_id"]] = self._new_player_state()
             battle["status"] = "active"
+            # Init skill state for both agents
+            for pid in battle["participants"]:
+                battle["skill_state"].setdefault(pid, {"focused_used": False, "guard_active": True, "poison_rounds": 0, "combo_win": 0})
             self._persistence.save_agent(agent)
             self._persistence.save_battle(battle)
             return self._battle_summary(battle)
@@ -157,130 +179,176 @@ class Arena:
 
     def list_public_battles(self):
         with self._lock:
-            return [self._public_battle_snapshot(battle) for battle in self._battles.values()]
+            return [self._public_battle_snapshot(b) for b in self._battles.values()]
 
     def list_open_battles(self):
         with self._lock:
             return [
-                self._battle_summary(battle)
-                for battle in self._battles.values()
-                if battle["status"] == "created"
+                self._battle_summary(b)
+                for b in self._battles.values()
+                if b["status"] == "created"
             ]
 
     def get_public_battle(self, battle_id):
         with self._lock:
             return self._public_battle_snapshot(self._battle_for_id(battle_id))
 
-    def submit_action(self, api_key, battle_id, action):
+    def submit_bid(self, api_key, battle_id, bid):
         with self._lock:
             agent = self._agent_for_key(api_key)
             battle = self._battle_for_id(battle_id)
             self._ensure_participant(agent, battle)
             if battle["status"] != "active":
                 raise ArenaError(409, "battle is not active")
-            if action not in VALID_ACTIONS:
-                raise ArenaError(400, "invalid action")
 
             agent_id = agent["agent_id"]
-
-            # forfeit is always allowed, even out of turn
-            if action == "forfeit":
-                opponent_id = self._opponent_id(battle, agent_id)
-                return self._resolve_battle(battle, opponent_id, "forfeit")
-
-            # enforce turn order
-            current_actor = battle["order"][battle["turn"] % 2]
-            if agent_id != current_actor:
-                raise ArenaError(409, "not your turn")
-
-            # validate resource requirements
             state = battle["states"][agent_id]
-            err = self._validate_action(state, action)
-            if err:
-                raise ArenaError(409, err)
+            max_bid = state["mp"]
+            if "overcharge" in self._agents[agent_id].get("skills", []):
+                max_bid += 5
 
-            self._apply_action(battle, agent_id, action)
+            bid = int(bid)
+            if bid < 0 or bid > max_bid:
+                raise ArenaError(409, f"bid must be 0..{max_bid}")
+            if agent_id in battle["pending_bids"]:
+                raise ArenaError(409, "already submitted a bid this round")
+
+            battle["pending_bids"][agent_id] = bid
+
+            if len(battle["pending_bids"]) == 2:
+                self._resolve_bids(battle)
+
             return self._battle_view(agent, battle)
 
-    # ------------------------------------------------------------------
-    # action application
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # bid resolution
+    # ==================================================================
 
-    def _validate_action(self, state, action):
-        if action == "heavy" and state["mp"] < 15:
-            return "not enough MP for heavy (need 15)"
-        if action == "heal" and state["mp"] < 10:
-            return "not enough MP to heal (need 10)"
-        return None
+    def _resolve_bids(self, battle):
+        a_id, b_id = battle["participants"]
+        bid_a = battle["pending_bids"][a_id]
+        bid_b = battle["pending_bids"][b_id]
+        a_state = battle["states"][a_id]
+        b_state = battle["states"][b_id]
 
-    def _apply_action(self, battle, actor, action):
-        opponent = self._opponent_id(battle, actor)
-        me = battle["states"][actor]
-        them = battle["states"][opponent]
+        a_skills = self._agents[a_id].get("skills", [])
+        b_skills = self._agents[b_id].get("skills", [])
 
-        # deterministic RNG for this turn
+        # Deduct MP (focused refunds first bid)
+        a_ss = battle["skill_state"][a_id]
+        b_ss = battle["skill_state"][b_id]
+
+        a_mp_cost = 0 if ("focused" in a_skills and not a_ss["focused_used"]) else bid_a
+        b_mp_cost = 0 if ("focused" in b_skills and not b_ss["focused_used"]) else bid_b
+        a_state["mp"] -= a_mp_cost
+        b_state["mp"] -= b_mp_cost
+        a_ss["focused_used"] = True
+        b_ss["focused_used"] = True
+
         rng = _random.Random(battle["seed"] + battle["turn"])
+        note_a = ""
+        note_b = ""
 
-        # clear my defending at the start of my turn
-        me["defending"] = False
+        if bid_a > bid_b:
+            winner, loser = a_id, b_id
+            w_bid, l_bid = bid_a, bid_b
+            w_skills, l_skills = a_skills, b_skills
+            w_ss, l_ss = a_ss, b_ss
+            w_state, l_state = a_state, b_state
+        elif bid_b > bid_a:
+            winner, loser = b_id, a_id
+            w_bid, l_bid = bid_b, bid_a
+            w_skills, l_skills = b_skills, a_skills
+            w_ss, l_ss = b_ss, a_ss
+            w_state, l_state = b_state, a_state
+        else:
+            # tie
+            a_state["mp"] = min(config.MAX_MP, a_state["mp"] + 10)
+            b_state["mp"] = min(config.MAX_MP, b_state["mp"] + 10)
+            if "meditate" in a_skills:
+                a_state["mp"] = min(config.MAX_MP, a_state["mp"] + 5)
+            if "meditate" in b_skills:
+                b_state["mp"] = min(config.MAX_MP, b_state["mp"] + 5)
+            note_a = f"tie ({bid_a} vs {bid_b}), +10 MP"
+            note_b = f"tie ({bid_b} vs {bid_a}), +10 MP"
+            self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a, note_b, None, 0)
+            return
 
-        note = ""
-        if action == "attack":
-            base = 10 + int(rng.random() * 8)  # 10..17
-            dmg = base // 2 if them["defending"] else base
-            them["hp"] -= dmg
-            them["defending"] = False
-            note = f"{actor} attacks for {dmg}"
+        damage = w_bid - l_bid
 
-        elif action == "heavy":
-            me["mp"] -= 15
-            if rng.random() > 0.25:  # 75% hit
-                base = 22 + int(rng.random() * 10)  # 22..31
-                dmg = base // 2 if them["defending"] else base
-                them["hp"] -= dmg
-                them["defending"] = False
-                note = f"{actor} heavy attack for {dmg}"
-            else:
-                note = f"{actor} heavy attack MISSED"
+        # ---- winner skills ----
+        if "berserker" in w_skills and w_state["hp"] < config.MAX_HP * 0.33:
+            damage = int(damage * 1.5)
 
-        elif action == "defend":
-            me["defending"] = True
-            me["mp"] = min(config.MAX_MP, me["mp"] + 5)
-            note = f"{actor} defends (+5 MP)"
+        if "poison" in w_skills:
+            l_ss["poison_rounds"] = 3
 
-        elif action == "heal":
-            me["mp"] -= 10
-            amount = 15 + int(rng.random() * 10)  # 15..24
-            healed = min(config.MAX_HP - me["hp"], amount)
-            me["hp"] += healed
-            note = f"{actor} heals {healed} HP"
+        # ---- loser skills ----
+        if "guard" in l_skills and l_ss["guard_active"]:
+            l_ss["guard_active"] = False
+            damage = 0
 
-        battle["battle_log"].append(
-            {
-                "turn": battle["turn"],
-                "actor": actor,
-                "action": action,
-                "note": note,
-                "after": copy.deepcopy(battle["states"]),
-            }
-        )
-        battle["turn"] += 1
+        if "thornmail" in l_skills and damage > 0:
+            w_state["hp"] -= 3  # recoil
 
-        # check terminal after each turn
+        # Apply damage
+        l_state["hp"] -= damage
+
+        # Vampire heal
+        if "vampire" in w_skills and damage > 0:
+            heal = max(1, int(damage * 0.3))
+            w_state["hp"] = min(config.MAX_HP, w_state["hp"] + heal)
+
+        # Overcharge self-damage if loser overbid
+        if "overcharge" in l_skills and l_bid > (battle["states"][loser]["mp"] + 5 - l_bid + l_mp_cost):
+            pass  # handled during validation
+
+        # Actually: overcharge self-damage on loss
+        if "overcharge" in l_skills:
+            over_amount = l_bid - (battle["states"][loser]["mp"] + l_mp_cost + 5)
+            if over_amount > 0:
+                l_state["hp"] -= 5  # self damage for overextending
+
+        # Overcharge self-damage for winner too (if they overbid)
+        if "overcharge" in w_skills:
+            base_mp = battle["states"][winner]["mp"] + w_mp_cost
+            over_amount = w_bid - (base_mp + 5)
+            if over_amount > 0:
+                w_state["hp"] -= 5
+
+        # Tick poison on loser
+        if l_ss["poison_rounds"] > 0:
+            l_state["hp"] -= 4
+            l_ss["poison_rounds"] -= 1
+
+        note_w = f"won bid ({w_bid} vs {l_bid}), dealt {damage} dmg"
+        note_l = f"lost bid ({l_bid} vs {w_bid}), took {damage} dmg"
+
+        self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a if a_id == winner else note_w, note_b if b_id == winner else note_l, winner, damage)
+
+        # check terminal
         if self._is_terminal(battle):
-            winner_id = self._determine_winner(battle)
+            wid = self._determine_winner(battle)
             reason = "hp_depleted"
-            if winner_id is None and battle["turn"] >= config.MAX_TURNS:
-                reason = "turn_limit"
-            elif winner_id is None:
-                reason = "hp_depleted"
-            return self._resolve_battle(battle, winner_id, reason)
+            return self._resolve_battle(battle, wid, reason)
 
         if battle["turn"] >= config.MAX_TURNS:
-            winner_id = self._determine_winner(battle)
-            return self._resolve_battle(battle, winner_id, "turn_limit")
+            wid = self._determine_winner(battle)
+            return self._resolve_battle(battle, wid, "turn_limit")
 
         return None
+
+    def _log_turn(self, battle, a_id, b_id, bid_a, bid_b, note_a, note_b, winner_id, damage):
+        battle["battle_log"].append({
+            "turn": battle["turn"],
+            "bids": {a_id: bid_a, b_id: bid_b},
+            "notes": {a_id: note_a, b_id: note_b},
+            "winner": winner_id,
+            "damage": damage,
+            "after": copy.deepcopy(battle["states"]),
+        })
+        battle["pending_bids"] = {}
+        battle["turn"] += 1
 
     def _is_terminal(self, battle):
         return any(s["hp"] <= 0 for s in battle["states"].values())
@@ -290,7 +358,7 @@ class Arena:
         a_hp = battle["states"][a_id]["hp"]
         b_hp = battle["states"][b_id]["hp"]
         if a_hp <= 0 and b_hp <= 0:
-            return None  # draw
+            return None
         if a_hp <= 0:
             return b_id
         if b_hp <= 0:
@@ -299,7 +367,7 @@ class Arena:
             return a_id
         if b_hp > a_hp:
             return b_id
-        return None  # draw
+        return None
 
     def _resolve_battle(self, battle, winner_id, reason):
         if battle["status"] == "resolved":
@@ -344,16 +412,12 @@ class Arena:
         self._persistence.save_battle(battle)
         return self._battle_summary(battle)
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # helpers
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     def _new_player_state(self):
-        return {
-            "hp": config.INITIAL_HP,
-            "mp": config.INITIAL_MP,
-            "defending": False,
-        }
+        return {"hp": config.INITIAL_HP, "mp": config.INITIAL_MP}
 
     def _validate_stake(self, agent, stake):
         if stake != config.FIXED_STAKE:
@@ -380,26 +444,36 @@ class Arena:
         return self._battles[battle_id]
 
     def _opponent_id(self, battle, agent_id):
-        for participant_id in battle["participants"]:
-            if participant_id != agent_id:
-                return participant_id
+        for pid in battle["participants"]:
+            if pid != agent_id:
+                return pid
         return None
 
-    # ------------------------------------------------------------------
-    # serialisation helpers
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # serialisation
+    # ==================================================================
 
     def _battle_view(self, agent, battle):
         agent_id = agent["agent_id"]
         opponent_id = self._opponent_id(battle, agent_id)
         view = self._battle_summary(battle)
         view["self"] = copy.deepcopy(battle["states"][agent_id])
-        view["opponent"] = (
-            copy.deepcopy(battle["states"][opponent_id]) if opponent_id else None
-        )
+        view["self"]["skills"] = self._agents[agent_id].get("skills", [])
+
+        if opponent_id and battle["status"] in ("active", "resolved"):
+            opp = battle["states"][opponent_id]
+            opp_skills = self._agents[opponent_id].get("skills", [])
+            view["opponent"] = {
+                "hp": _fog(opp["hp"], config.MAX_HP),
+                "mp": _fog(opp["mp"], config.MAX_MP),
+                "skills": opp_skills,
+            }
+        else:
+            view["opponent"] = None
+
         view["needs_action"] = (
             battle["status"] == "active"
-            and agent_id == battle["order"][battle["turn"] % 2]
+            and agent_id not in battle["pending_bids"]
         )
         view["battle_log"] = copy.deepcopy(battle["battle_log"])
         return view
@@ -433,6 +507,8 @@ class Arena:
         return {
             "agent_id": agent["agent_id"],
             "api_key": agent["api_key"],
+            "name": agent.get("name"),
+            "skills": agent.get("skills", []),
             "balance": agent["balance"],
             "wins": agent["wins"],
             "losses": agent["losses"],
