@@ -49,16 +49,18 @@ class BattleClient:
     def __init__(self, transport):
         self.transport = transport
 
-    def create_agent(self, name=None, skills=None):
+    def create_agent(self, name=None, skills=None, owner=None):
         payload = {}
         if name:
             payload["name"] = name
         if skills:
             payload["skills"] = skills
+        if owner:
+            payload["owner"] = owner
         return self.transport.request("POST", "/agents", payload=payload)
 
-    def list_open_battles(self):
-        return self.transport.request("GET", "/battles/open")["open_battles"]
+    def list_open_battles(self, api_key=None):
+        return self.transport.request("GET", "/battles/open", api_key)["open_battles"]
 
     def create_battle(self, api_key, stake=100, room=None):
         payload = {"stake": stake}
@@ -160,7 +162,7 @@ def play_single_agent(transport, api_key, strategy_name="balanced", poll_interva
     my_id = client.transport.request("GET", "/agents/me", api_key=api_key)["agent_id"]
 
     battle_id = None
-    for b in client.list_open_battles():
+    for b in client.list_open_battles(api_key):
         if b["participants"][0] != my_id:
             try:
                 client.join_battle(api_key, b["battle_id"])

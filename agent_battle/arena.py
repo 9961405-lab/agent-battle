@@ -1,6 +1,7 @@
 """Agent Battle arena — blind-bid combat with fog of war and skill decks."""
 
 import copy
+import hashlib
 import random as _random
 import secrets
 import threading
@@ -26,6 +27,12 @@ def _fog(value, max_val):
     return "high"
 
 
+def _make_seed(battle_id, server_secret):
+    """Deterministic seed from battle_id + server secret — not guessable by clients."""
+    raw = hashlib.sha256(f"{battle_id}:{server_secret}".encode()).digest()
+    return int.from_bytes(raw[:4], "big")
+
+
 def _validate_skills(skills):
     if not skills:
         return []
@@ -46,6 +53,7 @@ class Arena:
         self._names = {}
         self._rooms = {}
         self._battles = self._persistence.load_battles()
+        self._server_secret = secrets.token_hex(32)  # anti seed-prediction
         for battle in self._battles.values():
             if battle.get("room") and battle["status"] in ("created", "active"):
                 self._rooms[battle["room"]] = battle["battle_id"]
@@ -58,9 +66,10 @@ class Arena:
     # public API
     # ==================================================================
 
-    def create_agent(self, name=None, skills=None):
+    def create_agent(self, name=None, skills=None, owner=None):
         with self._lock:
             name = (name or "").strip() or None
+            owner = (owner or "").strip() or None
             if name and name in self._names:
                 return self._public_agent(self._agents[self._names[name]])
 
@@ -71,6 +80,7 @@ class Arena:
                 "agent_id": agent_id,
                 "api_key": api_key,
                 "name": name,
+                "owner": owner,
                 "skills": picked,
                 "balance": config.INITIAL_BALANCE,
                 "wins": 0,
@@ -110,7 +120,7 @@ class Arena:
                 "status": "created",
                 "stake": stake,
                 "room": room,
-                "seed": _random.randint(0, 2 ** 31 - 1),
+                "seed": _make_seed(battle_id, self._server_secret),
                 "turn": 0,
                 "participants": [agent["agent_id"]],
                 "order": [agent["agent_id"]],
@@ -181,13 +191,26 @@ class Arena:
         with self._lock:
             return [self._public_battle_snapshot(b) for b in self._battles.values()]
 
-    def list_open_battles(self):
+    def list_open_battles(self, api_key=None):
+        """Return joinable battles, filtering out same-owner battles."""
         with self._lock:
-            return [
-                self._battle_summary(b)
-                for b in self._battles.values()
-                if b["status"] == "created"
-            ]
+            agent = None
+            if api_key:
+                try:
+                    agent = self._agent_for_key(api_key)
+                except ArenaError:
+                    pass
+            result = []
+            for battle in self._battles.values():
+                if battle["status"] != "created":
+                    continue
+                if agent and agent.get("owner"):
+                    creator_id = battle["participants"][0]
+                    creator = self._agents.get(creator_id)
+                    if creator and creator.get("owner") == agent["owner"]:
+                        continue  # anti-self-play
+                result.append(self._battle_summary(battle))
+            return result
 
     def get_public_battle(self, battle_id):
         with self._lock:
@@ -508,6 +531,7 @@ class Arena:
             "agent_id": agent["agent_id"],
             "api_key": agent["api_key"],
             "name": agent.get("name"),
+            "owner": agent.get("owner"),
             "skills": agent.get("skills", []),
             "balance": agent["balance"],
             "wins": agent["wins"],

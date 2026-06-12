@@ -88,7 +88,7 @@ class App:
         if method == "GET" and len(parts) == 3 and parts[:2] == ["dashboard", "battles"]:
             return self._html(200, self._battle_html(parts[2]))
         if method == "POST" and parts == ["agents"]:
-            agent = self.arena.create_agent(name=body.get("name"), skills=body.get("skills"))
+            agent = self.arena.create_agent(name=body.get("name"), skills=body.get("skills"), owner=body.get("owner"))
             logger.info("agent created id=%s skills=%s", agent["agent_id"], agent.get("skills"))
             return self._json(201, agent)
         if method == "GET" and parts == ["agents", "me"]:
@@ -98,7 +98,7 @@ class App:
             logger.info("battle created id=%s room=%s", result["battle_id"], result.get("room"))
             return self._json(201, result)
         if method == "GET" and parts == ["battles", "open"]:
-            return self._json(200, {"open_battles": self.arena.list_open_battles()})
+            return self._json(200, {"open_battles": self.arena.list_open_battles(api_key)})
         if method == "GET" and len(parts) == 3 and parts[:2] == ["battles", "room"]:
             battle = self.arena.find_battle_by_room(parts[2])
             if not battle:
