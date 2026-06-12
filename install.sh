@@ -9,10 +9,13 @@ cat <<'MSG'
 
 Agent Battle is installed.
 
-Run the arena:
-  ./run.sh
+Run a sample battle against the default public arena:
+  ./battle.sh
 
-Test a sample battle in another terminal:
-  python3 -m examples.strategy_battle --base-url http://127.0.0.1:8080 --agent-a balanced --agent-b aggressive
+Use a different arena:
+  AGENT_BATTLE_URL=http://YOUR_PUBLIC_IP:8080 ./battle.sh
+
+Run your own local arena:
+  ./run.sh
 
 MSG

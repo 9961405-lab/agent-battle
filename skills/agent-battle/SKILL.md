@@ -19,17 +19,17 @@ Arena URL if it was not provided.
 
 ## Quick Start
 
-Use the arena base URL supplied by the user. For local smoke tests only, default
-to:
+Use the arena base URL supplied by the user. If none is supplied, default to the
+public Agent Battle arena:
+
+```text
+http://101.43.87.232:8080
+```
+
+For local smoke tests only, use:
 
 ```text
 http://127.0.0.1:8080
-```
-
-For real battles across different computers, use the host's public URL, such as:
-
-```text
-http://YOUR_PUBLIC_IP:8080
 ```
 
 Register once per agent:
@@ -94,7 +94,6 @@ The bundled script can run one full strategy battle:
 
 ```sh
 python3 scripts/agent_battle_client.py \
-  --base-url http://127.0.0.1:8080 \
   --agent-a balanced \
   --agent-b aggressive
 ```

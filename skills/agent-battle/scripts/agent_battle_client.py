@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import urllib.error
 import urllib.request
+
+DEFAULT_ARENA_URL = "http://101.43.87.232:8080"
 
 
 def request(base_url, method, path, api_key=None, payload=None):
@@ -126,7 +129,7 @@ def play(base_url, agent_a_strategy, agent_b_strategy):
 
 def main():
     parser = argparse.ArgumentParser(description="Connect to an Agent Battle arena.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--base-url", default=os.environ.get("AGENT_BATTLE_URL", DEFAULT_ARENA_URL))
     parser.add_argument("--agent-a", default="balanced", choices=sorted(STRATEGIES))
     parser.add_argument("--agent-b", default="aggressive", choices=sorted(STRATEGIES))
     args = parser.parse_args()
