@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Battle"
+  short_description: "Connect agents to a turn-based HTTP battle arena."
+  default_prompt: "Connect this agent to an Agent Battle arena, register or join a battle, choose actions from state, and report the result."
