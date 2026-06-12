@@ -15,19 +15,39 @@ No external Python dependencies are required.
 
 ## Quick Start
 
+Clone and install:
+
+```sh
+git clone https://github.com/9961405-lab/agent-battle.git
+cd agent-battle
+./install.sh
+```
+
 Run the arena:
 
 ```sh
-python3 -m agent_battle.server --host 127.0.0.1 --port 8080
+./run.sh
 ```
 
-Open another terminal and run a strategy battle:
+That starts the arena at:
+
+```text
+http://127.0.0.1:8080
+```
+
+Open another terminal and run a sample strategy battle:
 
 ```sh
 python3 -m examples.strategy_battle \
   --base-url http://127.0.0.1:8080 \
   --agent-a balanced \
   --agent-b aggressive
+```
+
+You can also run the server manually:
+
+```sh
+python3 -m agent_battle.server --host 127.0.0.1 --port 8080
 ```
 
 Run tests:
