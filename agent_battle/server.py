@@ -159,53 +159,20 @@ class App:
     def _battle_html(self, battle_id):
         battle = self.arena.get_public_battle(battle_id)
         participants = battle["participants"]
-        state_cards = "\n".join(self._state_card(battle, pid) for pid in participants)
-        if len(participants) == 1:
-            state_cards += '<article class="agent-card empty-card">Waiting for opponent</article>'
-        log_rows = "\n".join(self._log_row(e, participants) for e in battle["battle_log"])
-        if not log_rows:
-            log_rows = '<tr><td colspan="6" class="empty">No turns yet.</td></tr>'
         return self._page(f"Battle {battle_id}", f"""
         <header class="topbar">
           <div><a class="back" href="/dashboard">Back</a><h1>{self._short_id(battle_id)}</h1><p>{self._participant_label(participants, 0)} vs {self._participant_label(participants, 1)}</p></div>
           <button class="button" onclick="location.reload()">Refresh</button>
         </header>
         <main>
-          <section class="meta" id="meta">{self._meta_html(battle)}</section>
-          <section class="agents" id="agent-cards">{state_cards}</section>
-          <section class="table-wrap"><h2>Battle Log</h2>
-            <table>
-              <thead><tr><th>Turn</th><th>Agent A Bid</th><th>Agent B Bid</th><th>Result</th><th>A After</th><th>B After</th></tr></thead>
-              <tbody id="log-rows">{log_rows}</tbody>
-            </table>
+          <section class="meta" id="meta"></section>
+          <div class="latest" id="latest"></div>
+          <section class="agents" id="agent-cards"></section>
+          <section class="table-wrap"><h2>Play-by-play</h2>
+            <div class="feed" id="log-feed"></div>
           </section>
         </main>
-        """, body_extra=f"""<script>var battleId={json.dumps(battle_id)};</script><script>{_BATTLE_JS}</script>""")
-
-    def _state_card(self, battle, pid):
-        st = battle["states"][pid]
-        w = " winner" if battle["winner_id"] == pid else ""
-        return f"""<article class="agent-card{w}"><div class="agent-title">{self._short_id(pid)}</div><div class="agent-id">{self._escape(pid)}</div><dl><div><dt>HP</dt><dd>{st['hp']}</dd></div><div><dt>MP</dt><dd>{st['mp']}</dd></div></dl></article>"""
-
-    def _meta_html(self, battle):
-        w = "-"
-        if battle["status"] == "resolved":
-            w = "Draw" if battle["winner_id"] is None else self._short_id(battle["winner_id"])
-        return f"""<div><span>Status</span><strong>{self._status_badge(battle['status'])}</strong></div><div><span>Turn</span><strong>{battle['turn']}</strong></div><div><span>Stake</span><strong>{battle['stake']}</strong></div><div><span>Winner</span><strong>{self._escape(w)}</strong></div>"""
-
-    def _log_row(self, entry, participants):
-        a_id, b_id = participants[0], participants[1]
-        bids = entry["bids"]
-        notes = entry["notes"]
-        def _st(pid):
-            s = entry["after"].get(pid, {})
-            return f"HP {s.get('hp','?')} / MP {s.get('mp','?')}"
-        return f"""<tr><td>{entry['turn']}</td><td>{bids.get(a_id, '?')}</td><td>{bids.get(b_id, '?')}</td><td>{self._escape(notes.get(a_id, ''))}</td><td>{_st(a_id)}</td><td>{_st(b_id)}</td></tr>"""
-
-    def _winner_text(self, battle):
-        if battle["status"] != "resolved": return "-"
-        if battle["winner_id"] is None: return "Draw"
-        return self._short_id(battle["winner_id"])
+        """, body_extra=f"""<script>var battleId={json.dumps(battle_id)};var initialBattle={json.dumps(battle)};</script><script>{_BATTLE_JS}</script>""")
 
     def _participant_label(self, p, i):
         return "Waiting" if i >= len(p) else self._short_id(p[i])
@@ -251,6 +218,25 @@ tr:last-child td{{border-bottom:0}}
 .agent-card.winner{{border-color:var(--active)}}.agent-title{{font-size:18px;font-weight:800}}.agent-id{{margin-top:4px;overflow-wrap:anywhere}}
 dl{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:14px 0 0}}dt,dd{{margin:0}}dd{{font-size:22px;font-weight:800}}
 .empty,.empty-card{{color:var(--muted);text-align:center}}code{{padding:2px 5px;border-radius:4px;background:#eef1f5}}
+.bar{{height:14px;border-radius:7px;background:#e8ebf0;overflow:hidden;margin-top:4px}}
+.bar>i{{display:block;height:100%;border-radius:7px;transition:width .5s ease}}
+.bar.hp>i{{background:#10b981}}.bar.hp.mid>i{{background:#f59e0b}}.bar.hp.low>i{{background:#ef4444}}
+.bar.mp>i{{background:#3b82f6}}
+.statline{{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:10px}}
+.statline b{{color:var(--text);font-size:13px}}
+.chips{{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}}
+.chip{{font-size:11px;padding:2px 8px;border-radius:999px;background:#eef1f5;color:#475569;font-weight:600}}
+.latest{{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--active);border-radius:8px;padding:14px 16px;margin-bottom:20px;font-size:15px;font-weight:600;min-height:20px}}
+.latest.storm{{border-left-color:#7c3aed;background:#faf5ff}}
+.storm-meter{{display:flex;align-items:center;gap:8px}}
+.storm-meter .dot{{width:9px;height:9px;border-radius:50%;background:#e8ebf0}}
+.storm-meter .dot.on{{background:#7c3aed}}
+.feed{{display:flex;flex-direction:column;gap:8px;max-height:520px;overflow-y:auto}}
+.evt{{display:flex;gap:10px;align-items:baseline;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:#fbfcfd}}
+.evt .t{{flex:0 0 38px;color:var(--muted);font-size:12px;font-weight:700}}
+.evt .c{{flex:1;font-size:13px}}
+.evt.kill{{border-color:#ef4444;background:#fef2f2}}.evt.tie{{opacity:.75}}.evt.storm{{border-color:#c4b5fd;background:#faf5ff}}
+.fx{{font-size:12px;color:var(--muted);margin-left:6px}}
 @media(max-width:720px){{.topbar{{align-items:flex-start;flex-direction:column;padding:20px 16px 14px}}main{{padding:16px}}.stats,.meta,.agents{{grid-template-columns:1fr}}table{{min-width:680px}}}}
 </style>{head_extra}</head><body>{body}{body_extra}</body></html>"""
 
@@ -279,11 +265,92 @@ _BATTLE_JS = r"""
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function shortId(v){var s=esc(v);var i=s.indexOf('_');return i===-1?s.slice(0,14):s.slice(0,i+1)+s.slice(i+1,i+9)}
 function badge(s){return '<span class="badge '+esc(s)+'">'+esc(s)+'</span>'}
-function renderMeta(b){var w=b.winner_id,win='-';if(b.status==='resolved')win=w==null?'Draw':shortId(w);document.getElementById('meta').innerHTML='<div><span>Status</span><strong>'+badge(b.status)+'</strong></div><div><span>Turn</span><strong>'+b.turn+'</strong></div><div><span>Stake</span><strong>'+b.stake+'</strong></div><div><span>Winner</span><strong>'+esc(win)+'</strong></div>'}
-function renderCards(b){var p=b.participants;var h=p.map(function(aid){var s=b.states[aid],w=b.winner_id===aid?' winner':'';return'<article class="agent-card'+w+'"><div class="agent-title">'+shortId(aid)+'</div><div class="agent-id">'+esc(aid)+'</div><dl><div><dt>HP</dt><dd>'+s.hp+'</dd></div><div><dt>MP</dt><dd>'+s.mp+'</dd></div></dl></article>'}).join('');if(p.length===1)h+='<article class="agent-card empty-card">Waiting</article>';document.getElementById('agent-cards').innerHTML=h}
-function renderLog(b){var p=b.participants;var e=b.battle_log;var t=document.getElementById('log-rows');if(e.length===0){t.innerHTML='<tr><td colspan="6" class="empty">No turns yet.</td></tr>';return}t.innerHTML=e.map(function(x){var bids=x.bids;function st(pid){var s=x.after[pid];return s?'HP '+s.hp+' / MP '+s.mp:'-'}return'<tr><td>'+x.turn+'</td><td>'+(bids[p[0]]||'?')+'</td><td>'+(bids[p[1]]||'?')+'</td><td>'+esc((x.notes||{})[p[0]]||'')+'</td><td>'+st(p[0])+'</td><td>'+st(p[1])+'</td></tr>'}).join('')}
-function refreshBattle(){fetch('/dashboard/data').then(function(r){return r.json()}).then(function(d){for(var i=0;i<d.battles.length;i++){if(d.battles[i].battle_id===battleId){var b=d.battles[i];renderMeta(b);renderCards(b);renderLog(b);break}}})}
-setInterval(refreshBattle,5000)
+function clampPct(v,max){var p=Math.max(0,Math.min(100,(v/max)*100));return p}
+function hpClass(v,max){var r=v/max;return r<=0.25?'low':(r<=0.5?'mid':'')}
+var SKILL_ICON={vampire:'🧛',berserker:'🔥',focused:'🎯',thornmail:'🌵',meditate:'🧘',poison:'☠️',guard:'🛡️',overcharge:'⚡'};
+
+function stormLevel(b){return Math.max(0,(b.turn||0)-(b.storm_start||10)+1)}
+
+function renderMeta(b){
+  var w=b.winner_id,win='-';if(b.status==='resolved')win=w==null?'Draw':shortId(w);
+  var lvl=stormLevel(b),dots='';for(var i=0;i<6;i++)dots+='<span class="dot'+(i<lvl?' on':'')+'"></span>';
+  var stormHtml=lvl>0?('<div class="storm-meter">'+dots+'<b style="color:#7c3aed">-'+lvl+' HP/turn</b></div>'):('<span>turn '+(b.storm_start||10)+'</span>');
+  document.getElementById('meta').innerHTML=
+    '<div><span>Status</span><strong>'+badge(b.status)+'</strong></div>'+
+    '<div><span>Turn</span><strong>'+b.turn+' / '+(b.max_turns||30)+'</strong></div>'+
+    '<div><span>⛈️ Storm</span><strong>'+stormHtml+'</strong></div>'+
+    '<div><span>Winner</span><strong>'+esc(win)+'</strong></div>';
+}
+
+function renderCards(b){
+  var p=b.participants,maxhp=b.max_hp||100,maxmp=b.max_mp||100;
+  var h=p.map(function(aid){
+    var s=b.states[aid],w=b.winner_id===aid?' winner':'';
+    var sk=(b.skills&&b.skills[aid])||[];
+    var chips=sk.map(function(k){return '<span class="chip">'+(SKILL_ICON[k]||'')+' '+esc(k)+'</span>'}).join('');
+    return '<article class="agent-card'+w+'">'+
+      '<div class="agent-title">'+(w?'👑 ':'')+shortId(aid)+'</div>'+
+      '<div class="statline"><span>HP</span><b>'+s.hp+' / '+maxhp+'</b></div>'+
+      '<div class="bar hp '+hpClass(s.hp,maxhp)+'"><i style="width:'+clampPct(s.hp,maxhp)+'%"></i></div>'+
+      '<div class="statline"><span>MP</span><b>'+s.mp+' / '+maxmp+'</b></div>'+
+      '<div class="bar mp"><i style="width:'+clampPct(s.mp,maxmp)+'%"></i></div>'+
+      '<div class="chips">'+chips+'</div></article>';
+  }).join('');
+  if(p.length===1)h+='<article class="agent-card empty-card">Waiting for opponent…</article>';
+  document.getElementById('agent-cards').innerHTML=h;
+}
+
+// Build a spectator commentary line from a log entry.
+function commentary(x,p){
+  var bidA=x.bids[p[0]],bidB=x.bids[p[1]],fx=[],main;
+  var ev=x.events||[];
+  if(x.winner==null){
+    main='🤝 Both commit '+bidA+' vs '+bidB+' — stalemate, MP restored';
+  }else{
+    var wn=shortId(x.winner),wbid=x.bids[x.winner],lbid=(x.winner===p[0]?bidB:bidA);
+    var allin=wbid>=25?'🚀 ':'💥 ';
+    main=allin+wn+' bids '+wbid+' over '+lbid+' → '+x.damage+' dmg';
+  }
+  ev.forEach(function(e){
+    if(e==='guard')fx.push('🛡️ shield absorbs it');
+    else if(e==='vampire')fx.push('🧛 lifesteal');
+    else if(e==='poison_applied')fx.push('☠️ poison applied');
+    else if(e==='poison')fx.push('☠️ poison ticks 4');
+    else if(e==='thornmail')fx.push('🌵 3 recoil');
+    else if(e==='berserker')fx.push('🔥 berserker +50%');
+    else if(e==='overcharge')fx.push('⚡ overcharge burn 5');
+    else if(e.indexOf('storm:')===0)fx.push('⛈️ STORM -'+e.split(':')[1]+' both');
+  });
+  return {main:main,fx:fx,kill:false};
+}
+
+function renderFeed(b){
+  var p=b.participants,e=b.battle_log,box=document.getElementById('log-feed');
+  if(!e||e.length===0){box.innerHTML='<div class="empty">Waiting for the first bid…</div>';document.getElementById('latest').innerHTML='Battle is about to begin…';return}
+  var rows=e.map(function(x){
+    var c=commentary(x,p);
+    var cls='evt'+(x.winner==null?' tie':'')+((x.events||[]).some(function(s){return s.indexOf('storm:')===0})?' storm':'');
+    var fxHtml=c.fx.length?'<span class="fx">'+c.fx.map(esc).join(' · ')+'</span>':'';
+    return '<div class="'+cls+'"><div class="t">#'+x.turn+'</div><div class="c">'+esc(c.main)+fxHtml+'</div></div>';
+  });
+  box.innerHTML=rows.join('');
+  // latest moment banner
+  var last=e[e.length-1],lc=commentary(last,p);
+  var lcls='latest'+((last.events||[]).some(function(s){return s.indexOf('storm:')===0})?' storm':'');
+  var lat=document.getElementById('latest');
+  lat.className=lcls;
+  if(b.status==='resolved'){
+    var win=b.winner_id==null?'🤝 Draw!':('👑 '+shortId(b.winner_id)+' wins!');
+    lat.innerHTML=win+' <span class="fx">'+esc(lc.main)+'</span>';
+  }else{
+    lat.innerHTML=esc(lc.main)+(lc.fx.length?' <span class="fx">'+lc.fx.map(esc).join(' · ')+'</span>':'');
+  }
+}
+
+function render(b){renderMeta(b);renderCards(b);renderFeed(b)}
+function refreshBattle(){fetch('/dashboard/data').then(function(r){return r.json()}).then(function(d){for(var i=0;i<d.battles.length;i++){if(d.battles[i].battle_id===battleId){render(d.battles[i]);return}}})}
+if(typeof initialBattle!=='undefined'&&initialBattle)render(initialBattle);
+setInterval(refreshBattle,3000)
 """
 
 

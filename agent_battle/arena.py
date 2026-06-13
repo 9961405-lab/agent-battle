@@ -291,6 +291,7 @@ class Arena:
         rng = _random.Random(battle["seed"] + battle["turn"])
         note_a = ""
         note_b = ""
+        events = []  # spectator commentary tags for this round
 
         if bid_a > bid_b:
             winner, loser = a_id, b_id
@@ -308,6 +309,7 @@ class Arena:
             w_mp_cost, l_mp_cost = b_mp_cost, a_mp_cost
         else:
             # tie
+            events.append("tie")
             a_state["mp"] = min(config.MAX_MP, a_state["mp"] + 10)
             b_state["mp"] = min(config.MAX_MP, b_state["mp"] + 10)
             if "meditate" in a_skills:
@@ -319,14 +321,21 @@ class Arena:
                 if ss["poison_rounds"] > 0:
                     st["hp"] -= 4
                     ss["poison_rounds"] -= 1
+                    events.append("poison")
 
-            note_a = f"tie ({bid_a} vs {bid_b}), +10 MP"
-            note_b = f"tie ({bid_b} vs {bid_a}), +10 MP"
-            self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a, note_b, None, 0)
+            self._apply_storm(battle, a_state, b_state, events)
+
+            mp_note = "+15 MP" if "meditate" in a_skills else "+10 MP"
+            note_a = f"tie ({bid_a} vs {bid_b}), {mp_note}"
+            note_b = f"tie ({bid_b} vs {bid_a}), {'+15 MP' if 'meditate' in b_skills else '+10 MP'}"
+            self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a, note_b, None, 0, events)
 
             if self._is_terminal(battle):
                 wid = self._determine_winner(battle)
                 return self._resolve_battle(battle, wid, "hp_depleted")
+            if battle["turn"] >= config.MAX_TURNS:
+                wid = self._determine_winner(battle)
+                return self._resolve_battle(battle, wid, "turn_limit")
             return
 
         damage = w_bid - l_bid
@@ -334,17 +343,21 @@ class Arena:
         # ---- winner skills ----
         if "berserker" in w_skills and w_state["hp"] < config.MAX_HP * 0.33:
             damage = int(damage * 1.5)
+            events.append("berserker")
 
         if "poison" in w_skills:
             l_ss["poison_rounds"] = 3
+            events.append("poison_applied")
 
         # ---- loser skills ----
         if "guard" in l_skills and l_ss["guard_active"]:
             l_ss["guard_active"] = False
             damage = 0
+            events.append("guard")
 
         if "thornmail" in l_skills and damage > 0:
             w_state["hp"] -= 3  # recoil
+            events.append("thornmail")
 
         # Apply damage
         l_state["hp"] -= damage
@@ -353,6 +366,7 @@ class Arena:
         if "vampire" in w_skills and damage > 0:
             heal = max(1, int(damage * 0.3))
             w_state["hp"] = min(config.MAX_HP, w_state["hp"] + heal)
+            events.append("vampire")
 
         # Overcharge: if you used MP beyond your natural pool (bid > pre-deduction MP),
         # you lose 5 HP. Only the loser takes overcharge self-damage.
@@ -360,16 +374,20 @@ class Arena:
             pre_mp = l_state["mp"] + l_mp_cost  # MP before this bid was deducted
             if l_bid > pre_mp:
                 l_state["hp"] -= 5
+                events.append("overcharge")
 
         # Tick poison on loser
         if l_ss["poison_rounds"] > 0:
             l_state["hp"] -= 4
             l_ss["poison_rounds"] -= 1
+            events.append("poison")
+
+        self._apply_storm(battle, a_state, b_state, events)
 
         note_w = f"won bid ({w_bid} vs {l_bid}), dealt {damage} dmg"
         note_l = f"lost bid ({l_bid} vs {w_bid}), took {damage} dmg"
 
-        self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a if a_id == winner else note_w, note_b if b_id == winner else note_l, winner, damage)
+        self._log_turn(battle, a_id, b_id, bid_a, bid_b, note_a if a_id == winner else note_w, note_b if b_id == winner else note_l, winner, damage, events)
 
         # check terminal
         if self._is_terminal(battle):
@@ -383,13 +401,24 @@ class Arena:
 
         return None
 
-    def _log_turn(self, battle, a_id, b_id, bid_a, bid_b, note_a, note_b, winner_id, damage):
+    def _apply_storm(self, battle, a_state, b_state, events):
+        """Escalating arena damage to both players, forcing a timely finish."""
+        over = battle["turn"] - config.STORM_START
+        if over < 0:
+            return
+        dmg = over + 1
+        a_state["hp"] -= dmg
+        b_state["hp"] -= dmg
+        events.append(f"storm:{dmg}")
+
+    def _log_turn(self, battle, a_id, b_id, bid_a, bid_b, note_a, note_b, winner_id, damage, events=None):
         battle["battle_log"].append({
             "turn": battle["turn"],
             "bids": {a_id: bid_a, b_id: bid_b},
             "notes": {a_id: note_a, b_id: note_b},
             "winner": winner_id,
             "damage": damage,
+            "events": list(events or []),
             "after": copy.deepcopy(battle["states"]),
         })
         battle["pending_bids"] = {}
@@ -521,6 +550,14 @@ class Arena:
             battle["status"] == "active"
             and agent_id not in battle["pending_bids"]
         )
+        # Storm telegraph: damage both players take THIS turn if it resolves now.
+        next_storm = max(0, battle["turn"] - config.STORM_START + 1)
+        view["storm"] = {
+            "active": next_storm > 0,
+            "damage": next_storm,
+            "starts_turn": config.STORM_START,
+            "max_turns": config.MAX_TURNS,
+        }
         view["battle_log"] = self._fog_battle_log(battle["battle_log"], agent_id, opponent_id)
         return view
 
@@ -557,8 +594,13 @@ class Arena:
             "participants": list(battle["participants"]),
             "winner_id": battle["winner_id"],
             "states": copy.deepcopy(battle["states"]),
+            "skills": {pid: self._agents[pid].get("skills", []) for pid in battle["participants"] if pid in self._agents},
             "battle_log": copy.deepcopy(battle["battle_log"]),
             "result": copy.deepcopy(battle["result"]),
+            "storm_start": config.STORM_START,
+            "max_turns": config.MAX_TURNS,
+            "max_hp": config.MAX_HP,
+            "max_mp": config.MAX_MP,
         }
 
     def _public_agent(self, agent):

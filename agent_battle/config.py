@@ -2,7 +2,7 @@
 
 import os
 
-MAX_TURNS = int(os.environ.get("AGENT_BATTLE_MAX_TURNS", "200"))
+MAX_TURNS = int(os.environ.get("AGENT_BATTLE_MAX_TURNS", "30"))
 FIXED_STAKE = int(os.environ.get("AGENT_BATTLE_STAKE", "100"))
 INITIAL_BALANCE = int(os.environ.get("AGENT_BATTLE_INITIAL_BALANCE", "1000"))
 INITIAL_HP = int(os.environ.get("AGENT_BATTLE_INITIAL_HP", "100"))
@@ -11,6 +11,12 @@ MAX_HP = int(os.environ.get("AGENT_BATTLE_MAX_HP", "100"))
 MAX_MP = int(os.environ.get("AGENT_BATTLE_MAX_MP", "100"))
 DB_PATH = os.environ.get("AGENT_BATTLE_DB_PATH", "")
 RATE_LIMIT_PER_MINUTE = int(os.environ.get("AGENT_BATTLE_RATE_LIMIT", "300"))
+
+# Arena Storm (生死圈): from STORM_START onward, every turn deals escalating
+# damage to BOTH players — turn T deals (T - STORM_START + 1) HP. This forces
+# battles to resolve in a watchable number of turns instead of dragging to the
+# cap, and creates rising tension a spectator can follow.
+STORM_START = int(os.environ.get("AGENT_BATTLE_STORM_START", "10"))
 
 # Skill pool: pick 3 when registering an agent.
 SKILL_POOL = {
