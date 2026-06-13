@@ -175,7 +175,7 @@ class HttpApiTest(unittest.TestCase):
         battle = self._post_json("/battles", a["api_key"], {"stake": 100})["body"]
         self._post_json(f"/battles/{battle['battle_id']}/join", b["api_key"], {})
         r = self._get_text("/dashboard", None)
-        self.assertIn("Agent Battle Dashboard", r["body"])
+        self.assertIn("AGENT BATTLE", r["body"])
 
     def _post_json(self, path, api_key, payload):
         r = self._request("POST", path, api_key, payload)
