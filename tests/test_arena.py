@@ -206,6 +206,20 @@ class ArenaBidTest(unittest.TestCase):
         self.assertEqual(res["reason"], "both_idle")
         self.assertEqual(res["winner_id"], self.a["agent_id"])
 
+    def test_sweep_survives_legacy_battle_missing_fields(self):
+        # A battle row from an older schema (no pending_bids/participants/states)
+        # must not crash the timeout sweep — regression for the 502 it caused.
+        self.arena._battles["battle_legacy"] = {
+            "battle_id": "battle_legacy",
+            "status": "active",
+            "stake": 100,
+            "created_at": 0,  # ancient -> past any timeout
+        }
+        # Should not raise, and the listing should still come back.
+        battles = self.arena.list_public_battles()
+        self.assertIsInstance(battles, list)
+        self.assertEqual(self.arena._battles["battle_legacy"]["status"], "resolved")
+
     def test_timeout_frees_agent_for_new_battle(self):
         import agent_battle.config as cfg
         battle = self._active()

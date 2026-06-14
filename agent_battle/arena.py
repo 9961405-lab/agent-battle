@@ -60,8 +60,20 @@ class Arena:
         self._server_secret = secrets.token_hex(32)  # anti seed-prediction
         self._last_cleanup = time.monotonic()
         for battle in self._battles.values():
+            # Normalize battles loaded from older schema versions so newer code
+            # that assumes these fields exist can't KeyError on legacy rows.
             battle.setdefault("resolved_at", None)
-            if battle.get("room") and battle["status"] in ("created", "active"):
+            battle.setdefault("pending_bids", {})
+            battle.setdefault("turn", 0)
+            battle.setdefault("battle_log", [])
+            battle.setdefault("states", {})
+            battle.setdefault("participants", [])
+            battle.setdefault("skill_state", {})
+            battle.setdefault("winner_id", None)
+            battle.setdefault("result", None)
+            battle.setdefault("stake", config.FIXED_STAKE)
+            battle.setdefault("last_activity", battle.get("created_at"))
+            if battle.get("room") and battle.get("status") in ("created", "active"):
                 self._rooms[battle["room"]] = battle["battle_id"]
         for agent in self._agents.values():
             self._api_keys[agent["api_key"]] = agent["agent_id"]
@@ -216,16 +228,24 @@ class Arena:
             return
         if time.time() - last < config.BID_TIMEOUT:
             return
-        pending = battle["pending_bids"]
+        # Defensive: a malformed/legacy battle without two proper participants
+        # and states can't be reasoned about — resolve it as an abandoned draw
+        # so it stops showing as a live match, instead of crashing the sweep.
+        participants = battle.get("participants") or []
+        states = battle.get("states") or {}
+        if len(participants) != 2 or not all(p in states for p in participants):
+            self._resolve_battle(battle, None, "abandoned")
+            return
+        pending = battle.get("pending_bids") or {}
         if len(pending) == 1:
             # The one who bid is alive; the other went silent — it forfeits.
             online_id = next(iter(pending))
             self._resolve_battle(battle, online_id, "opponent_timeout")
             return
         # Neither side acted: award to higher HP, draw if equal.
-        a_id, b_id = battle["participants"]
-        a_hp = battle["states"][a_id]["hp"]
-        b_hp = battle["states"][b_id]["hp"]
+        a_id, b_id = participants
+        a_hp = states[a_id].get("hp", 0)
+        b_hp = states[b_id].get("hp", 0)
         if a_hp > b_hp:
             self._resolve_battle(battle, a_id, "both_idle")
         elif b_hp > a_hp:
@@ -498,37 +518,48 @@ class Arena:
         battle["winner_id"] = winner_id
         if battle.get("room"):
             self._rooms.pop(battle["room"], None)
-        pot = battle["stake"] * 2
+        stake = battle.get("stake", config.FIXED_STAKE)
+        participants = battle.get("participants", [])
+        pot = stake * 2
+        # All agent lookups are guarded so resolving a battle that references a
+        # deleted/legacy agent can't crash (e.g. abandoned-draw cleanup).
         if winner_id is None:
-            for agent_id in battle["participants"]:
-                self._agents[agent_id]["balance"] += battle["stake"]
-                self._agents[agent_id]["draws"] += 1
-                self._agents[agent_id]["active_battle_id"] = None
-                self._persistence.save_agent(self._agents[agent_id])
+            for agent_id in participants:
+                ag = self._agents.get(agent_id)
+                if ag is None:
+                    continue
+                ag["balance"] += stake
+                ag["draws"] += 1
+                ag["active_battle_id"] = None
+                self._persistence.save_agent(ag)
         else:
-            self._agents[winner_id]["balance"] += pot
-            self._agents[winner_id]["wins"] += 1
-            self._agents[winner_id]["active_battle_id"] = None
-            self._persistence.save_agent(self._agents[winner_id])
+            win = self._agents.get(winner_id)
+            if win is not None:
+                win["balance"] += pot
+                win["wins"] += 1
+                win["active_battle_id"] = None
+                self._persistence.save_agent(win)
             loser_id = self._opponent_id(battle, winner_id)
-            self._agents[loser_id]["losses"] += 1
-            self._agents[loser_id]["active_battle_id"] = None
-            self._persistence.save_agent(self._agents[loser_id])
+            lose = self._agents.get(loser_id)
+            if lose is not None:
+                lose["losses"] += 1
+                lose["active_battle_id"] = None
+                self._persistence.save_agent(lose)
 
         battle["result"] = {
             "battle_id": battle["battle_id"],
             "status": "resolved",
             "reason": reason,
             "winner_id": winner_id,
-            "stake": battle["stake"],
+            "stake": stake,
             "pot": pot,
-            "turns_played": battle["turn"],
+            "turns_played": battle.get("turn", 0),
             "balances": {
                 agent_id: self._agents[agent_id]["balance"]
-                for agent_id in battle["participants"]
+                for agent_id in participants if agent_id in self._agents
             },
-            "final_states": copy.deepcopy(battle["states"]),
-            "battle_log": copy.deepcopy(battle["battle_log"]),
+            "final_states": copy.deepcopy(battle.get("states", {})),
+            "battle_log": copy.deepcopy(battle.get("battle_log", [])),
         }
         self._persistence.save_battle(battle)
         return self._battle_summary(battle)
