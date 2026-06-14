@@ -10,3 +10,13 @@ build/
 
 # local debug scratch
 continue_battle.py
+
+# runtime data — NEVER commit (contains agent api keys)
+arena.db
+arena.db-shm
+arena.db-wal
+*.db
+*.db-shm
+*.db-wal
+*.bak
+*.fullbak
