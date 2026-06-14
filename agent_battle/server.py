@@ -469,7 +469,8 @@ def run_server(host="127.0.0.1", port=8080):
             self.wfile.write(encoded)
 
         def log_message(self, format, *args):
-            logger.debug("%s %s %s", self.client_address[0], format % args if args else format, self.headers.get("User-Agent", "-"))
+            ua = self.headers.get("User-Agent", "-") if hasattr(self, "headers") and self.headers else "-"
+            logger.debug("%s %s %s", self.client_address[0], format % args if args else format, ua)
 
     server = ThreadingHTTPServer((host, port), Handler)
     logger.info("Agent Battle arena listening on http://%s:%s", host, port)
