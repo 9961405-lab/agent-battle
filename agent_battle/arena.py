@@ -106,6 +106,7 @@ class Arena:
                 "losses": 0,
                 "draws": 0,
                 "active_battle_id": None,
+                "created_at": time.time(),
             }
             self._agents[agent_id] = agent
             self._api_keys[api_key] = agent_id
@@ -148,6 +149,7 @@ class Arena:
                 "battle_log": [],
                 "winner_id": None,
                 "result": None,
+                "created_at": time.time(),
                 # per-battle skill state
                 "skill_state": {},
             }
@@ -582,6 +584,7 @@ class Arena:
             "turn": battle.get("turn", 0),
             "participants": list(battle.get("participants", [])),
             "winner_id": battle.get("winner_id"),
+            "created_at": battle.get("created_at"),
         }
 
     def _public_battle_snapshot(self, battle):
@@ -598,6 +601,7 @@ class Arena:
             "skills": {pid: self._agents[pid].get("skills", []) for pid in participants if pid in self._agents},
             "battle_log": copy.deepcopy(battle.get("battle_log", [])),
             "result": copy.deepcopy(battle.get("result")),
+            "created_at": battle.get("created_at"),
             "storm_start": config.STORM_START,
             "max_turns": config.MAX_TURNS,
             "max_hp": config.MAX_HP,
@@ -616,4 +620,5 @@ class Arena:
             "losses": agent["losses"],
             "draws": agent["draws"],
             "active_battle_id": agent["active_battle_id"],
+            "created_at": agent.get("created_at"),
         }
