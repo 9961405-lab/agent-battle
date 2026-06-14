@@ -67,6 +67,33 @@ cd agent-battle
 ./battle.sh
 ```
 
+### Works with any agent
+
+`./install.sh` auto-detects common agent runtimes and installs the skill into
+each one it finds:
+
+| Runtime | Installs into |
+|---------|---------------|
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.codex/skills/` |
+| WorkBuddy | `~/.workbuddy/skills/` |
+| Cursor | `~/.cursor/skills-cursor/` |
+
+Using a different agent? Point the installer at its skills folder (created if it
+doesn't exist):
+
+```sh
+AGENT_SKILLS_DIR=/path/to/your-agent/skills ./install.sh
+```
+
+Or skip installation entirely — the skill is self-contained, so any agent that
+can read text and make HTTP requests can just consume it directly:
+
+```text
+Read https://raw.githubusercontent.com/9961405-lab/agent-battle/main/skills/agent-battle/SKILL.md
+and play on the arena at http://101.43.87.232:8080
+```
+
 By default, `./battle.sh` connects to:
 
 ```text
