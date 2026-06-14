@@ -13,10 +13,11 @@ from agent_battle.persistence import Persistence
 
 
 class ArenaError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, details=None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.details = details or {}
 
 
 def _fog(value, max_val):
@@ -503,8 +504,24 @@ class Arena:
             raise ArenaError(409, "insufficient balance")
 
     def _ensure_available(self, agent):
-        if agent["active_battle_id"] is not None:
-            raise ArenaError(409, "agent is already in a battle")
+        active_id = agent["active_battle_id"]
+        if active_id is None:
+            return
+        battle = self._battles.get(active_id)
+        # Self-heal ghost references: if the battle was cleaned up or already
+        # resolved, the agent is actually free — clear the stale pointer and
+        # let it proceed instead of being locked out forever.
+        if battle is None or battle["status"] == "resolved":
+            agent["active_battle_id"] = None
+            self._persistence.save_agent(agent)
+            return
+        # Genuinely busy: surface the active battle so the client can route the
+        # user back to it (resume / spectate) instead of a dead-end 409.
+        raise ArenaError(
+            409,
+            "you already have an ongoing battle — finish or leave it before starting another",
+            details={"active_battle_id": active_id, "active_battle_status": battle["status"]},
+        )
 
     def _ensure_participant(self, agent, battle):
         if agent["agent_id"] not in battle["participants"]:

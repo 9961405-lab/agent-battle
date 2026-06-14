@@ -53,7 +53,10 @@ class App:
                 return self._json(429, {"error": "rate limit exceeded"})
             return self._handle(request)
         except ArenaError as error:
-            return self._json(error.status, {"error": error.message})
+            payload = {"error": error.message}
+            if error.details:
+                payload.update(error.details)
+            return self._json(error.status, payload)
         except json.JSONDecodeError:
             return self._json(400, {"error": "invalid json body"})
 

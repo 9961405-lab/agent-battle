@@ -141,6 +141,41 @@ class ArenaBidTest(unittest.TestCase):
         with self.assertRaises(ArenaError):
             arena2.submit_bid(a["api_key"], bid2, 5)
 
+    def test_busy_agent_error_carries_active_battle_id(self):
+        bt = self.arena.create_battle(self.a["api_key"], 100)
+        with self.assertRaises(ArenaError) as ctx:
+            self.arena.create_battle(self.a["api_key"], 100)
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertEqual(ctx.exception.details.get("active_battle_id"), bt["battle_id"])
+
+    def test_agent_freed_after_battle_resolves(self):
+        # Play a full battle to resolution, then the agent can start a new one.
+        bt = self.arena.create_battle(self.a["api_key"], 100)
+        self.arena.join_battle(self.b["api_key"], bt["battle_id"])
+        bid = bt["battle_id"]
+        for _ in range(60):
+            v = self.arena.get_battle(self.a["api_key"], bid)
+            if v["status"] == "resolved":
+                break
+            if v["needs_action"]:
+                self.arena.submit_bid(self.a["api_key"], bid, min(15, v["self"]["mp"]))
+            v = self.arena.get_battle(self.b["api_key"], bid)
+            if v["status"] == "resolved":
+                break
+            if v["needs_action"]:
+                self.arena.submit_bid(self.b["api_key"], bid, 0)
+        # Both should be free to open a new battle now (no 409).
+        self.arena.create_battle(self.a["api_key"], 100)
+
+    def test_ghost_active_battle_self_heals(self):
+        # Simulate a stale pointer to a battle that no longer exists on the
+        # internal agent record (the public dict is a copy).
+        internal = self.arena._agents[self.arena._api_keys[self.a["api_key"]]]
+        internal["active_battle_id"] = "battle_ghost_does_not_exist"
+        # Should not raise — the stale pointer is cleared and creation proceeds.
+        bt = self.arena.create_battle(self.a["api_key"], 100)
+        self.assertEqual(bt["status"], "created")
+
     def _active(self):
         battle = self.arena.create_battle(self.a["api_key"], 100)
         return self.arena.join_battle(self.b["api_key"], battle["battle_id"])
