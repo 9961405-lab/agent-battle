@@ -218,15 +218,12 @@ class Arena:
 
     def _check_bid_timeout(self, battle):
         """Resolve an active battle abandoned past BID_TIMEOUT seconds."""
-        if battle["status"] != "active":
+        if battle.get("status") != "active":
             return
-        # Battles created before last_activity existed fall back to created_at;
-        # if neither is present, start the clock now (resolved on a later poll).
+        # Fall back to created_at for battles predating last_activity. If neither
+        # exists, it's an ancient zombie row — treat it as already timed out.
         last = battle.get("last_activity") or battle.get("created_at")
-        if last is None:
-            battle["last_activity"] = time.time()
-            return
-        if time.time() - last < config.BID_TIMEOUT:
+        if last is not None and time.time() - last < config.BID_TIMEOUT:
             return
         # Defensive: a malformed/legacy battle without two proper participants
         # and states can't be reasoned about — resolve it as an abandoned draw
@@ -680,17 +677,36 @@ class Arena:
 
     def _public_battle_snapshot(self, battle):
         participants = list(battle.get("participants", []))
+        stake = battle.get("stake", config.FIXED_STAKE)
+        status = battle.get("status")
+        states = copy.deepcopy(battle.get("states", {}))
+        log = copy.deepcopy(battle.get("battle_log", []))
+        # Fog of war on the PUBLIC feed: while a battle is active, exact HP/MP
+        # must not leak — otherwise an opponent could poll /dashboard/data to
+        # read precise stats and bypass the blind-bid fog. Resolved battles show
+        # full numbers for replay. Bids/damage/winner stay visible (revealed
+        # each round anyway).
+        if status == "active":
+            def _fog_states(d):
+                for s in d.values():
+                    if isinstance(s.get("hp"), (int, float)):
+                        s["hp"] = _fog(s["hp"], config.MAX_HP)
+                    if isinstance(s.get("mp"), (int, float)):
+                        s["mp"] = _fog(s["mp"], config.MAX_MP)
+            _fog_states(states)
+            for entry in log:
+                _fog_states(entry.get("after", {}))
         return {
             "battle_id": battle["battle_id"],
-            "status": battle["status"],
-            "stake": battle["stake"],
-            "pot": battle["stake"] * len(participants),
+            "status": status,
+            "stake": stake,
+            "pot": stake * len(participants),
             "turn": battle.get("turn", 0),
             "participants": participants,
             "winner_id": battle.get("winner_id"),
-            "states": copy.deepcopy(battle.get("states", {})),
+            "states": states,
             "skills": {pid: self._agents[pid].get("skills", []) for pid in participants if pid in self._agents},
-            "battle_log": copy.deepcopy(battle.get("battle_log", [])),
+            "battle_log": log,
             "result": copy.deepcopy(battle.get("result")),
             "created_at": battle.get("created_at"),
             "storm_start": config.STORM_START,

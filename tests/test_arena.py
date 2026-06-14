@@ -206,6 +206,23 @@ class ArenaBidTest(unittest.TestCase):
         self.assertEqual(res["reason"], "both_idle")
         self.assertEqual(res["winner_id"], self.a["agent_id"])
 
+    def test_public_snapshot_fogs_active_but_not_resolved(self):
+        battle = self._active()
+        bid = battle["battle_id"]
+        self.arena.submit_bid(self.a["api_key"], bid, 5)
+        # While active, the public feed must NOT expose exact HP/MP.
+        snap = next(b for b in self.arena.list_public_battles() if b["battle_id"] == bid)
+        for st in snap["states"].values():
+            self.assertIn(st["hp"], ("low", "mid", "high"))
+            self.assertIn(st["mp"], ("low", "mid", "high"))
+        # battle_log after-states must be fogged too.
+        for entry in snap["battle_log"]:
+            for st in entry.get("after", {}).values():
+                self.assertIn(st["hp"], ("low", "mid", "high"))
+        # Bids stay public (revealed each round).
+        if snap["battle_log"]:
+            self.assertIsInstance(snap["battle_log"][-1]["bids"], dict)
+
     def test_sweep_survives_legacy_battle_missing_fields(self):
         # A battle row from an older schema (no pending_bids/participants/states)
         # must not crash the timeout sweep — regression for the 502 it caused.
