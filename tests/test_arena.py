@@ -206,6 +206,22 @@ class ArenaBidTest(unittest.TestCase):
         self.assertEqual(res["reason"], "both_idle")
         self.assertEqual(res["winner_id"], self.a["agent_id"])
 
+    def test_bankruptcy_protection_tops_up(self):
+        internal = self.arena._agents[self.arena._api_keys[self.a["api_key"]]]
+        internal["balance"] = 0  # broke
+        # Should NOT raise — broke agent is topped up and can create a battle.
+        bt = self.arena.create_battle(self.a["api_key"], 100)
+        self.assertEqual(bt["status"], "created")
+        # Balance restored (minus the stake just paid).
+        self.assertGreater(internal["balance"], 0)
+
+    def test_non_integer_bid_rejected_cleanly(self):
+        battle = self._active()
+        bid = battle["battle_id"]
+        with self.assertRaises(ArenaError) as ctx:
+            self.arena.submit_bid(self.a["api_key"], bid, "not-a-number")
+        self.assertEqual(ctx.exception.status, 400)
+
     def test_public_snapshot_fogs_active_but_not_resolved(self):
         battle = self._active()
         bid = battle["battle_id"]

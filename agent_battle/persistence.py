@@ -65,6 +65,17 @@ class Persistence:
             self._conn.execute("DELETE FROM battles WHERE battle_id = ?", (battle_id,))
             self._conn.commit()
 
+    def checkpoint(self):
+        """Truncate the WAL so it can't grow without bound on a long-running
+        server. Called periodically from the arena's cleanup pass."""
+        if not self._enabled:
+            return
+        with self._lock:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
+
     # ------------------------------------------------------------------
     # internal
     # ------------------------------------------------------------------

@@ -93,6 +93,7 @@ class Arena:
         ]
         for bid in stale:
             del self._battles[bid]
+        self._persistence.checkpoint()  # keep the WAL from growing unbounded
 
     # ==================================================================
     # public API
@@ -312,7 +313,10 @@ class Arena:
             if "overcharge" in self._agents[agent_id].get("skills", []):
                 max_bid += 5
 
-            bid = int(bid)
+            try:
+                bid = int(bid)
+            except (TypeError, ValueError):
+                raise ArenaError(400, "bid must be an integer")
             if bid < 0 or bid > max_bid:
                 raise ArenaError(409, f"bid must be 0..{max_bid}")
             if agent_id in battle["pending_bids"]:
@@ -572,7 +576,11 @@ class Arena:
         if stake != config.FIXED_STAKE:
             raise ArenaError(400, f"stake must be {config.FIXED_STAKE}")
         if agent["balance"] < stake:
-            raise ArenaError(409, "insufficient balance")
+            # Bankruptcy protection: balance is a scoreboard, not a hard currency.
+            # Top a broke agent back up so it can keep playing instead of being
+            # permanently locked out after a losing streak.
+            agent["balance"] = config.INITIAL_BALANCE
+            self._persistence.save_agent(agent)
 
     def _ensure_available(self, agent):
         active_id = agent["active_battle_id"]

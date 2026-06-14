@@ -59,6 +59,11 @@ class App:
             return self._json(error.status, payload)
         except json.JSONDecodeError:
             return self._json(400, {"error": "invalid json body"})
+        except Exception:
+            # Last-resort guard: never let an unexpected error bubble into the
+            # HTTP server's default 500 + stack-trace spam. Log it, return JSON.
+            logger.exception("unhandled error: %s %s", request.get("method"), request.get("path"))
+            return self._json(500, {"error": "internal server error"})
 
     def _handle(self, request):
         method = request["method"]
