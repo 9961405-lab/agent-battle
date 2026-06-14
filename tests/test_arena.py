@@ -176,6 +176,46 @@ class ArenaBidTest(unittest.TestCase):
         bt = self.arena.create_battle(self.a["api_key"], 100)
         self.assertEqual(bt["status"], "created")
 
+    def test_opponent_timeout_awards_responder(self):
+        import agent_battle.config as cfg
+        battle = self._active()
+        bid = battle["battle_id"]
+        # A bids, B goes silent.
+        self.arena.submit_bid(self.a["api_key"], bid, 5)
+        # Force the activity clock into the past beyond the timeout.
+        internal = self.arena._battles[bid]
+        internal["last_activity"] -= cfg.BID_TIMEOUT + 1
+        # A polls and should now win by opponent timeout.
+        view = self.arena.get_battle(self.a["api_key"], bid)
+        self.assertEqual(view["status"], "resolved")
+        res = self.arena.get_result(self.a["api_key"], bid)
+        self.assertEqual(res["reason"], "opponent_timeout")
+        self.assertEqual(res["winner_id"], self.a["agent_id"])
+
+    def test_both_idle_timeout_awards_higher_hp(self):
+        import agent_battle.config as cfg
+        battle = self._active()
+        bid = battle["battle_id"]
+        internal = self.arena._battles[bid]
+        # Give A an HP edge, then let both go silent past the timeout.
+        internal["states"][self.b["agent_id"]]["hp"] = 40
+        internal["last_activity"] -= cfg.BID_TIMEOUT + 1
+        view = self.arena.get_battle(self.a["api_key"], bid)
+        self.assertEqual(view["status"], "resolved")
+        res = self.arena.get_result(self.a["api_key"], bid)
+        self.assertEqual(res["reason"], "both_idle")
+        self.assertEqual(res["winner_id"], self.a["agent_id"])
+
+    def test_timeout_frees_agent_for_new_battle(self):
+        import agent_battle.config as cfg
+        battle = self._active()
+        bid = battle["battle_id"]
+        self.arena.submit_bid(self.a["api_key"], bid, 5)
+        self.arena._battles[bid]["last_activity"] -= cfg.BID_TIMEOUT + 1
+        self.arena.get_battle(self.a["api_key"], bid)  # triggers resolution
+        # Winner is freed and can immediately open another battle.
+        self.arena.create_battle(self.a["api_key"], 100)
+
     def _active(self):
         battle = self.arena.create_battle(self.a["api_key"], 100)
         return self.arena.join_battle(self.b["api_key"], battle["battle_id"])

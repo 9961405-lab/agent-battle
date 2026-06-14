@@ -18,6 +18,15 @@ RATE_LIMIT_PER_MINUTE = int(os.environ.get("AGENT_BATTLE_RATE_LIMIT", "300"))
 # cap, and creates rising tension a spectator can follow.
 STORM_START = int(os.environ.get("AGENT_BATTLE_STORM_START", "10"))
 
+# Disconnect handling: if an active battle sees no bid activity for this many
+# seconds, it's considered abandoned. The player who is still responding wins by
+# timeout; if neither has acted, the higher-HP player wins (draw if tied). This
+# frees a stuck player whose opponent went offline instead of locking the battle
+# forever (turns only advance when BOTH sides bid, so a silent opponent would
+# otherwise freeze the match — storm included). Generous by default to tolerate
+# slow LLM turns and rate limiting.
+BID_TIMEOUT = int(os.environ.get("AGENT_BATTLE_BID_TIMEOUT", "120"))
+
 # Skill pool: pick 3 when registering an agent.
 SKILL_POOL = {
     "vampire":    "win bid → heal 30% of damage dealt",

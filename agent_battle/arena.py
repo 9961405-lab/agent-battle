@@ -186,6 +186,7 @@ class Arena:
             battle["order"].append(agent["agent_id"])
             battle["states"][agent["agent_id"]] = self._new_player_state()
             battle["status"] = "active"
+            battle["last_activity"] = time.time()
             # Init skill state for both agents
             for pid in battle["participants"]:
                 battle["skill_state"].setdefault(pid, {"focused_used": False, "guard_active": True, "poison_rounds": 0, "combo_win": 0})
@@ -198,7 +199,34 @@ class Arena:
             agent = self._agent_for_key(api_key)
             battle = self._battle_for_id(battle_id)
             self._ensure_participant(agent, battle)
+            # A still-polling player naturally triggers disconnect resolution
+            # here, so a silent opponent can't freeze the match indefinitely.
+            self._check_bid_timeout(battle)
             return self._battle_view(agent, battle)
+
+    def _check_bid_timeout(self, battle):
+        """Resolve an active battle abandoned past BID_TIMEOUT seconds."""
+        if battle["status"] != "active":
+            return
+        last = battle.get("last_activity")
+        if last is None or time.time() - last < config.BID_TIMEOUT:
+            return
+        pending = battle["pending_bids"]
+        if len(pending) == 1:
+            # The one who bid is alive; the other went silent — it forfeits.
+            online_id = next(iter(pending))
+            self._resolve_battle(battle, online_id, "opponent_timeout")
+            return
+        # Neither side acted: award to higher HP, draw if equal.
+        a_id, b_id = battle["participants"]
+        a_hp = battle["states"][a_id]["hp"]
+        b_hp = battle["states"][b_id]["hp"]
+        if a_hp > b_hp:
+            self._resolve_battle(battle, a_id, "both_idle")
+        elif b_hp > a_hp:
+            self._resolve_battle(battle, b_id, "both_idle")
+        else:
+            self._resolve_battle(battle, None, "both_idle")
 
     def get_result(self, api_key, battle_id):
         with self._lock:
@@ -211,12 +239,21 @@ class Arena:
 
     def list_public_battles(self):
         with self._lock:
+            self._sweep_timeouts()
             return [self._public_battle_snapshot(b) for b in self._battles.values()]
+
+    def _sweep_timeouts(self):
+        """Resolve any abandoned active battles (covers the both-offline case
+        where neither player is polling get_battle to trigger it themselves)."""
+        for battle in list(self._battles.values()):
+            if battle["status"] == "active":
+                self._check_bid_timeout(battle)
 
     def list_open_battles(self, api_key=None):
         """Return joinable battles, filtering out same-owner battles."""
         with self._lock:
             self._maybe_cleanup()
+            self._sweep_timeouts()
             agent = None
             if api_key:
                 try:
@@ -260,6 +297,7 @@ class Arena:
                 raise ArenaError(409, "already submitted a bid this round")
 
             battle["pending_bids"][agent_id] = bid
+            battle["last_activity"] = time.time()
 
             if len(battle["pending_bids"]) == 2:
                 self._resolve_bids(battle)
