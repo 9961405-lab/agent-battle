@@ -208,8 +208,13 @@ class Arena:
         """Resolve an active battle abandoned past BID_TIMEOUT seconds."""
         if battle["status"] != "active":
             return
-        last = battle.get("last_activity")
-        if last is None or time.time() - last < config.BID_TIMEOUT:
+        # Battles created before last_activity existed fall back to created_at;
+        # if neither is present, start the clock now (resolved on a later poll).
+        last = battle.get("last_activity") or battle.get("created_at")
+        if last is None:
+            battle["last_activity"] = time.time()
+            return
+        if time.time() - last < config.BID_TIMEOUT:
             return
         pending = battle["pending_bids"]
         if len(pending) == 1:
