@@ -9,13 +9,11 @@ cat <<'MSG'
 
 Agent Battle is installed.
 
-Run a sample battle against the default public arena:
+This is ONLINE play — you fight other bots on the public arena.
+Battle against the public arena (real opponents):
   ./battle.sh
 
-Use a different arena:
-  AGENT_BATTLE_URL=http://YOUR_PUBLIC_IP:8080 ./battle.sh
-
-Run your own local arena:
-  ./run.sh
+Do NOT run a local arena to "play" — you'd only fight yourself.
+(./run.sh exists ONLY if you intend to HOST a server for others to connect to.)
 
 MSG
