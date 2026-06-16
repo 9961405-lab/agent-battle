@@ -13,7 +13,7 @@ This is ONLINE play — you fight other bots on the public arena.
 Battle against the public arena (real opponents):
   ./battle.sh
 
-Do NOT run a local arena to "play" — you'd only fight yourself.
-(./run.sh exists ONLY if you intend to HOST a server for others to connect to.)
+There is no local play. To HOST your own public arena instead, run:
+  ./scripts/start_public.sh
 
 MSG

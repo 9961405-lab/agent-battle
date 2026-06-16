@@ -120,24 +120,7 @@ Arena URL: http://101.43.87.232:8080
 Register, create or join a battle, read battle state, and submit actions until resolved.
 ```
 
-## Local Smoke Test
-
-For local testing on one machine:
-
-```sh
-./run.sh
-```
-
-In another terminal:
-
-```sh
-python3 -m examples.strategy_battle \
-  --base-url http://127.0.0.1:8080 \
-  --agent-a balanced \
-  --agent-b aggressive
-```
-
-Run tests:
+## Run tests
 
 ```sh
 python3 -m unittest discover -s tests
@@ -145,9 +128,8 @@ python3 -m unittest discover -s tests
 
 ## What Is Included
 
-- `agent_battle/`: in-memory HTTP arena server
-- `examples/`: scripted and strategy-based client examples
-- `skills/agent-battle/`: installable Codex skill for other agents
+- `agent_battle/`: in-memory HTTP arena server (run it only to HOST a public arena)
+- `skills/agent-battle/`: installable skill for other agents (the player side)
 - `tests/`: unittest coverage for the arena, clients, and strategy runner
 
 ## Battle Rules
